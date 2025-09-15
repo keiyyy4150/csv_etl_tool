@@ -1,0 +1,97 @@
+Option Explicit
+
+'==============================
+' CSV 出力（Masterの現在値をそのまま）
+'   ファイル名規則：
+'    - IsProcessed=True         → "proc_＜Base＞_＜B3＞_TS.csv"
+'    - HasRaw=True(未加工)      → "raw_ ＜Base＞_＜B3＞_TS.csv"
+'    - それ以外（初期/手動編集）→ "hd_  ＜Base＞_＜B3＞_TS.csv"
+'==============================
+Public Sub ExportCSV()
+    On Error GoTo EH
+    Dim masterLo As ListObject
+    If Len(CurrentMasterTableName) = 0 Then UsePipelineMain
+    Set masterLo = GetListObjectByName(CurrentMasterTableName)
+    If masterLo Is Nothing Then
+        MsgBox "Masterテーブルが見つかりません: " & CurrentMasterTableName, vbCritical
+        Exit Sub
+    End If
+    If masterLo.DataBodyRange Is Nothing Then
+        MsgBox "出力対象のデータがありません。", vbExclamation
+        Exit Sub
+    End If
+    
+    Dim basePath As String, exportPath As String
+    basePath = ThisWorkbook.Path
+    exportPath = basePath & "\" & EXPORT_FOLDER & "\"
+    EnsureFolder exportPath
+    EnsureFolder basePath & "\" & LOG_FOLDER & "\"
+    
+    ' 変換識別子：Masterのシートの B3 を使用
+    Dim ident As String
+    ident = CStr(masterLo.Parent.Range("B3").Value)
+    If Len(ident) = 0 Then ident = "NA"
+    
+    ' モード判定
+    Dim modePrefix As String
+    If IsProcessed Then
+        modePrefix = "proc_"
+    ElseIf HasRaw Then
+        modePrefix = "raw_"
+    Else
+        modePrefix = "hd_"
+    End If
+    
+    Dim fileName As String
+    fileName = modePrefix & CurrentExportBaseName & "_" & ident & "_" & TimeStamp() & ".csv"
+    
+    ' 書き出し
+    WriteRangeAsCsvWithEncoding masterLo, exportPath & fileName, CurrentEncodingMode
+    WriteLog "INFO", "ExportCSV: " & exportPath & fileName & " / Encoding=" & CurrentEncodingMode & " / rows=" & masterLo.DataBodyRange.rows.Count
+    MsgBox "CSV出力しました：" & exportPath & fileName, vbInformation
+    Exit Sub
+EH:
+    WriteLog "ERROR", "ExportCSV error: " & Err.Number & " " & Err.Description
+    MsgBox "ExportCSVでエラー: " & Err.Description, vbCritical
+End Sub
+
+'=== CSV書き出し（値→RFC4180, 引用/改行対応, エンコード） ===
+Public Sub WriteRangeAsCsvWithEncoding(lo As ListObject, filePath As String, encMode As String)
+    Dim arr As Variant, rows As Long, cols As Long
+    arr = lo.DataBodyRange.Value
+    rows = UBound(arr, 1): cols = UBound(arr, 2)
+    
+    ' ヘッダー行をCSVに追加
+    Dim headerLine As String: headerLine = ""
+    Dim headerArr As Variant
+    headerArr = lo.HeaderRowRange.Value
+    Dim c As Long
+    For c = 1 To cols
+        Dim headerCell As String: headerCell = CStr(headerArr(1, c))
+        If InStr(headerCell, """") > 0 Then headerCell = Replace(headerCell, """", """""")
+        If InStr(headerCell, ",") > 0 Or InStr(headerCell, vbCr) > 0 Or InStr(headerCell, vbLf) > 0 Then
+            headerCell = """" & headerCell & """"
+        End If
+        If c > 1 Then headerLine = headerLine & ","
+        headerLine = headerLine & headerCell
+    Next
+    Dim sb As String
+    sb = headerLine & vbCrLf
+    
+    Dim r As Long
+    For r = 1 To rows
+        Dim line As String: line = ""
+        For c = 1 To cols
+            Dim cell As String: cell = CStr(arr(r, c))
+            If InStr(cell, """") > 0 Then cell = Replace(cell, """", """""")
+            If InStr(cell, ",") > 0 Or InStr(cell, vbCr) > 0 Or InStr(cell, vbLf) > 0 Then
+                cell = """" & cell & """"
+            End If
+            If c > 1 Then line = line & ","
+            line = line & cell
+        Next
+        sb = sb & line & vbCrLf
+    Next
+    
+    WriteTextFile filePath, sb, encMode
+End Sub
