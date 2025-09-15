@@ -1,0 +1,123 @@
+'=== modFilterRules（簡易版） =========================================
+Option Explicit
+
+' ルール表（ListObject名）— 必要なら名前を合わせてください
+Private Const FILTER_TABLE_NAME As String = "Filter_Rules"
+
+' 1回だけ読み込む
+Private mRulesLoaded As Boolean
+Private mRules As Collection  ' 各要素: Dictionary("Table","Column","Op","Value","Group","Enabled")
+
+' 文字列整形（Trim + 両端のクォート除去）
+Private Function Clean(ByVal s As String) As String
+    s = Trim$(s)
+    If (Left$(s, 1) = """" And Right$(s, 1) = """") Or (Left$(s, 1) = "'" And Right$(s, 1) = "'") Then
+        s = Mid$(s, 2, Len(s) - 2)
+    End If
+    Clean = s
+End Function
+
+' ヘッダ正規化（BOM除去＋Trim）
+Private Function NormHead(ByVal s As String) As String
+    If Len(s) = 0 Then NormHead = "": Exit Function
+    s = Replace$(s, ChrW(&HFEFF), "")
+    NormHead = Trim$(s)
+End Function
+
+' ルール一括読み込み（有効=○のみ）
+Private Sub EnsureRulesLoaded()
+    If mRulesLoaded Then Exit Sub
+    Set mRules = New Collection
+
+    Dim lo As ListObject
+    Set lo = GetListObjectByName(FILTER_TABLE_NAME)
+    If Not lo Is Nothing Then
+        Dim r As Long, rw As Range
+        For r = 1 To lo.ListRows.Count
+            Set rw = lo.DataBodyRange.Rows(r)
+            Dim en As String:   en = Clean(CStr(rw.Cells(1, 1).Value))          ' 有効
+            If en = "○" Or UCase$(en) = "TRUE" Then
+                Dim one As Object: Set one = CreateObject("Scripting.Dictionary")
+                one("Table")  = Clean(CStr(rw.Cells(1, 2).Value))               ' 対象テーブル
+                one("Group")  = CLng(Val(rw.Cells(1, 3).Value))                 ' グループ
+                one("Column") = NormHead(CStr(rw.Cells(1, 4).Value))            ' 対象カラム
+                one("Op")     = Clean(CStr(rw.Cells(1, 5).Value))               ' 演算子
+                one("Value")  = Clean(CStr(rw.Cells(1, 6).Value))               ' 値
+                mRules.Add one
+            End If
+        Next
+    End If
+    mRulesLoaded = True
+End Sub
+
+' 比較（=, <>, >, >=, <, <= のみ）
+Private Function CompareOp(ByVal actual As String, ByVal op As String, ByVal expected As String) As Boolean
+    op = Trim$(op)
+    Select Case op
+        Case "="
+            CompareOp = (actual = expected)
+        Case "<>"
+            CompareOp = (actual <> expected)
+        Case ">", ">=", "<", "<="
+            ' 数値として比較（変換失敗は0扱い）
+            Dim a#, e#
+            On Error Resume Next
+            a = CDbl(actual): e = CDbl(expected)
+            On Error GoTo 0
+            Select Case op
+                Case ">":  CompareOp = (a > e)
+                Case ">=": CompareOp = (a >= e)
+                Case "<":  CompareOp = (a < e)
+                Case "<=": CompareOp = (a <= e)
+            End Select
+        Case Else
+            CompareOp = False  ' 未対応演算子は不一致
+    End Select
+End Function
+
+' 1行がグループ条件を満たすか（同一グループは AND、グループ間は OR）
+Public Function PassesFilterBaseRow(ByVal baseTbl As String, ByRef baseArr As Variant, ByVal rowIdx As Long) As Boolean
+    EnsureRulesLoaded
+
+    ' このテーブル向けのルールが1つも無ければ「全件通過」
+    Dim hasAny As Boolean: hasAny = False
+    Dim g As Object: Set g = CreateObject("Scripting.Dictionary") ' group -> Collection of rules
+
+    Dim i As Long
+    For i = 1 To mRules.Count
+        If mRules(i)("Table") = baseTbl Then
+            hasAny = True
+            Dim gid As Long: gid = mRules(i)("Group")
+            If Not g.Exists(gid) Then g.Add gid, New Collection
+            g(gid).Add mRules(i)
+        End If
+    Next
+    If Not hasAny Then PassesFilterBaseRow = True: Exit Function
+
+    ' OR（どれかのグループを満たせば採用）
+    Dim k As Variant
+    For Each k In g.Keys
+        Dim okGroup As Boolean: okGroup = True
+
+        Dim colls As Collection: Set colls = g(k)
+        Dim j As Long
+        For j = 1 To colls.Count
+            Dim rule As Object: Set rule = colls(j)
+            ' 対象カラムの列番号を取得
+            Dim ci As Long
+            ci = FindColumnIndex(baseArr, rule("Column"))
+            If ci = 0 Then
+                okGroup = False: Exit For ' カラム見つからない→グループNG
+            End If
+            Dim actual As String: actual = CStr(baseArr(rowIdx, ci))
+            If Not CompareOp(actual, rule("Op"), rule("Value")) Then
+                okGroup = False: Exit For
+            End If
+        Next
+
+        If okGroup Then PassesFilterBaseRow = True: Exit Function
+    Next
+
+    PassesFilterBaseRow = False
+End Function
+'====================================================================
