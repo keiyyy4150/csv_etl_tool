@@ -1,0 +1,250 @@
+Option Explicit
+
+'=== 区切り文字の簡易自動判定（1行目のみ・クォート内は概ね考慮） ===
+Private Function DetectDelimiterFromText(ByVal txt As String) As String
+    Dim firstLine As String, p As Long
+    p = InStr(txt, vbLf)
+    If p = 0 Then firstLine = txt Else firstLine = Left$(txt, p - 1)
+
+    Dim i As Long, ch As String * 1, inQ As Boolean, q As String * 1
+    Dim cntComma As Long, cntTab As Long, cntSemi As Long
+    For i = 1 To Len(firstLine)
+        ch = Mid$(firstLine, i, 1)
+        If ch = """" Or ch = "'" Then
+            If inQ Then
+                If ch = q Then inQ = False
+            Else
+                inQ = True: q = ch
+            End If
+        ElseIf Not inQ Then
+            If ch = "," Then cntComma = cntComma + 1
+            If ch = vbTab Then cntTab = cntTab + 1
+            If ch = ";" Then cntSemi = cntSemi + 1
+        End If
+    Next
+ 
+    If (cntTab >= cntComma) And (cntTab >= cntSemi) Then
+        DetectDelimiterFromText = vbTab
+    ElseIf cntComma >= cntSemi Then
+        DetectDelimiterFromText = ","
+    Else
+        DetectDelimiterFromText = ";"
+    End If
+
+End Function
+
+
+'==============================
+' フォルダ作成（存在しなければ作成）
+'==============================
+Public Sub EnsureFolder(ByVal pathWithSlash As String)
+    On Error Resume Next
+    If Right$(pathWithSlash, 1) <> "\" Then pathWithSlash = pathWithSlash & "\"
+    If Len(Dir(pathWithSlash, vbDirectory)) = 0 Then MkDir pathWithSlash
+    On Error GoTo 0
+End Sub
+
+'==============================
+' CSV 読み込み（文字コード対応）
+'==============================
+Public Function ParseCsvFile(filePath As String) As Variant
+    Dim txt As String
+    txt = ReadTextFile(filePath, CurrentEncodingMode) ' AUTO/UTF-8/SHIFT_JIS/UTF-16LE
+    ParseCsvFile = ParseCsvText(txt)
+End Function
+
+' RFC4180 簡易：ダブルクォートと改行を処理
+Public Function ParseCsvText(ByVal txt As String) As Variant
+    Dim delim As String
+    delim = DetectDelimiterFromText(txt)  ' ★ 自動判定
+
+    Dim i As Long, ch As String * 1, d As String
+    Dim inQuote As Boolean
+    Dim field As String, row As Collection, rows As Collection
+    Set rows = New Collection: Set row = New Collection
+    field = "": inQuote = False
+
+    ' 改行統一
+    txt = Replace$(txt, vbCrLf, vbLf)
+    txt = Replace$(txt, vbCr, vbLf)
+
+    For i = 1 To Len(txt)
+        ch = Mid$(txt, i, 1)
+        If inQuote Then
+            If ch = """" Then
+                If i < Len(txt) And Mid$(txt, i + 1, 1) = """" Then
+                    field = field & """": i = i + 1
+                Else
+                    inQuote = False
+                End If
+            Else
+                field = field & ch
+            End If
+        Else
+            d = Mid$(delim, 1, 1)
+            Select Case ch
+                Case """": inQuote = True
+                Case d:   row.Add field: field = ""
+                Case vbLf: row.Add field: field = "": rows.Add row: Set row = New Collection
+                Case Else: field = field & ch
+            End Select
+        End If
+    Next
+    row.Add field: rows.Add row
+
+    Dim maxCol As Long, r As Long
+    For r = 1 To rows.Count
+        If rows(r).Count > maxCol Then maxCol = rows(r).Count
+    Next
+    Dim result() As Variant, rr As Long, cc As Long
+    If rows.Count = 0 Then
+        ReDim result(1 To 1, 1 To 1): result(1, 1) = ""
+        ParseCsvText = result: Exit Function
+    End If
+    ReDim result(1 To rows.Count, 1 To maxCol)
+    For rr = 1 To rows.Count
+        For cc = 1 To rows(rr).Count
+            result(rr, cc) = rows(rr)(cc)
+        Next
+        For cc = rows(rr).Count + 1 To maxCol
+            result(rr, cc) = ""
+        Next
+    Next
+    ParseCsvText = result
+End Function
+
+'==============================
+' 文字コード：読み（ADODB.Stream + BOM検出）
+'==============================
+Public Function ReadTextFile(filePath As String, encMode As String) As String
+    Dim mode As String: mode = UCase$(encMode)
+    If mode = "AUTO" Or Len(mode) = 0 Then mode = DetectEncoding(filePath)
+    
+    Dim stm As Object ' ADODB.Stream
+    Set stm = CreateObject("ADODB.Stream")
+    stm.Type = 2 ' text
+    Select Case mode
+        Case "UTF-8":     stm.Charset = "utf-8"
+        Case "UTF-16LE":  stm.Charset = "unicode"
+        Case "SHIFT_JIS": stm.Charset = "shift_jis"
+        Case Else:        stm.Charset = "shift_jis"
+    End Select
+    stm.Open
+    stm.LoadFromFile filePath
+    ReadTextFile = stm.ReadText(-1)
+    stm.Close
+    Set stm = Nothing
+End Function
+
+Public Function DetectEncoding(filePath As String) As String
+    Dim f As Integer, b1 As Byte, b2 As Byte, b3 As Byte
+    On Error GoTo FAIL
+    f = FreeFile
+    Open filePath For Binary As #f
+    If LOF(f) >= 2 Then
+        Get #f, , b1: Get #f, , b2
+        If b1 = &HEF And b2 = &HBB And LOF(f) >= 3 Then
+            Get #f, , b3
+            If b3 = &HBF Then DetectEncoding = "UTF-8": Close #f: Exit Function
+        ElseIf b1 = &HFF And b2 = &HFE Then
+            DetectEncoding = "UTF-16LE": Close #f: Exit Function
+        End If
+    End If
+    Close #f
+FAIL:
+    If Len(DetectEncoding) = 0 Then DetectEncoding = "SHIFT_JIS"
+End Function
+
+'==============================
+' 文字コード：書き（ADODB.Stream）
+'==============================
+Public Sub WriteTextFile(filePath As String, ByVal content As String, encMode As String)
+    Dim stm As Object ' ADODB.Stream
+    Dim mode As String: mode = UCase$(encMode)
+    If mode = "AUTO" Or Len(mode) = 0 Then mode = "UTF-8" ' AUTOはUTF-8(BOM)で出力
+    
+    Set stm = CreateObject("ADODB.Stream")
+    stm.Type = 2 ' text
+    Select Case mode
+        Case "UTF-8":     stm.Charset = "utf-8"
+        Case "UTF-16LE":  stm.Charset = "unicode"
+        Case "SHIFT_JIS": stm.Charset = "shift_jis"
+        Case Else:        stm.Charset = "utf-8"
+    End Select
+    stm.Open
+    stm.WriteText content
+    stm.SaveToFile filePath, 2 ' adSaveCreateOverWrite
+    stm.Close
+    Set stm = Nothing
+End Sub
+
+'==============================
+' importFiles から必要CSVを読み込む
+'==============================
+Public Function LoadAllCsv(importPath As String, _
+                           tblNames() As String, _
+                           ByRef dict As Object) As Boolean
+    Dim i As Long, filePath As String, extra As String
+    
+    If (Not Not tblNames) = 0 Then
+        If Dir(importPath, vbDirectory) = "" Then
+            MsgBox "入力フォルダが存在しません：" & importPath, vbCritical
+            LoadAllCsv = False: Exit Function
+        End If
+        LoadAllCsv = True: Exit Function
+    End If
+    
+    ' 必須CSV存在チェック
+    For i = LBound(tblNames) To UBound(tblNames)
+        filePath = importPath & tblNames(i) & ".csv"
+        If Dir(filePath) = "" Then
+            MsgBox "必要ファイルが不足しています：" & vbCrLf & filePath, vbCritical
+            LoadAllCsv = False: Exit Function
+        End If
+    Next
+    
+    ' 余分CSVの警告
+    Dim fn As String, isListed As Boolean
+    fn = Dir(importPath & "*.csv")
+    Do While Len(fn) > 0
+        isListed = False
+        For i = LBound(tblNames) To UBound(tblNames)
+            If LCase$(fn) = LCase$(tblNames(i) & ".csv") Then isListed = True: Exit For
+        Next
+        If Not isListed Then
+            extra = extra & IIf(Len(extra) > 0, vbCrLf, "") & (importPath & fn)
+        End If
+        fn = Dir
+    Loop
+    If Len(extra) > 0 Then
+        WriteLog "WARN", "Extra CSV exists (ignored):" & vbCrLf & extra
+        MsgBox "定義外のCSVがフォルダにあります（処理は続行）：" & vbCrLf & extra, vbExclamation
+    End If
+    
+    ' 読み込み
+    For i = LBound(tblNames) To UBound(tblNames)
+        filePath = importPath & tblNames(i) & ".csv"
+        dict(tblNames(i)) = ParseCsvFile(filePath)
+        WriteLog "INFO", "Loaded: " & filePath & " / rows=" & UBound(dict(tblNames(i)), 1)
+    Next
+    
+    LoadAllCsv = True
+End Function
+
+'==============================
+' テーブル（ListObject）を探すユーティリティ
+'==============================
+Public Function GetListObjectByName(tableName As String) As ListObject
+    Dim ws As Worksheet, lo As ListObject
+    For Each ws In ThisWorkbook.Worksheets
+        For Each lo In ws.ListObjects
+            If lo.name = tableName Then
+                Set GetListObjectByName = lo
+                Exit Function
+            End If
+        Next
+    Next
+    Set GetListObjectByName = Nothing
+End Function
+
+
