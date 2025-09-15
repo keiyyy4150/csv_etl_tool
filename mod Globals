@@ -1,0 +1,78 @@
+Option Explicit
+
+'==============================
+' グローバル定数・共有変数
+'==============================
+Public Const IMPORT_FOLDER As String = "importFiles"   ' 入力フォルダ
+Public Const EXPORT_FOLDER As String = "exportFiles"   ' 出力フォルダ
+Public Const LOG_FOLDER    As String = "log"           ' ログフォルダ
+
+' エンコード（AUTO/UTF-8/SHIFT_JIS/UTF-16LE）
+Public CurrentEncodingMode As String
+
+' パイプライン（Main / List）
+'  - Mapping/ Master は "テーブル名" で指定（同名の ListObject を全シートから検索）
+Public CurrentMappingTableName As String   ' 例: "Mapping_Main" / "Mapping_List"
+Public CurrentMasterTableName  As String   ' 例: "Master_Main"  / "Master_List"
+Public CurrentExportBaseName   As String   ' 例: "inventory" / "inventory_detail"
+
+' 1対多を展開するか（List パイプラインで True）
+Public AllowOneToMany As Boolean
+
+' 読み込んだ各テーブル（CSV）の2次元配列（Key: テーブル名）
+Public TableData As Object           ' Scripting.Dictionary
+
+' JOIN 用のキー索引
+'  - KeyIndexSingle: key -> 先頭一致の行番号（従来どおり）
+'  - KeyIndexMulti : key -> Collection(行番号…)（1対多展開用）
+Public KeyIndexSingle As Object      ' Scripting.Dictionary
+Public KeyIndexMulti  As Object      ' Scripting.Dictionary
+
+' 無加工JOIN済みの中間データ（ProcessDataで加工に使う）
+Public RawJoined As Variant
+Public HasRaw As Boolean
+Public IsProcessed As Boolean
+
+' Mappingキャッシュ
+Public Map_OutCols()  As String  ' 出力カラム名
+Public Map_DataType() As String  ' 型 TEXT/NUMBER/DATE
+' Public Map_Logic()    As String  ' ロジック（"a→b;c→d" or 式）
+Public Map_IsKey()    As Boolean ' キー列（○）
+Public Map_Mode()     As String  ' モード（VALUE/CONCAT/EXPR）
+Public Map_Def()      As String  ' 定義（CONCAT列挙/EXPR式）
+Public Map_TblNames() As String  ' 1行目：H列以降のインポート元テーブル名（拡張子なし）
+Public Map_SrcCols    As Variant ' 行=出力列, 列=テーブル：元カラム名（VALUE用）
+
+' JOIN再構築で使うベース情報
+Public m_baseTblName As String        ' ベーステーブル名
+Public m_baseRowIdx() As Long         ' 出力行 → ベース行 index（2?の値）
+
+' 便利関数（全モジュールで使う）
+Public Function TimeStamp() As String
+    TimeStamp = Format(Now, "yyyymmddhhmmss")
+End Function
+
+' Variant 変数に入っている配列が「割り当て済み」かどうか判定
+Public Function IsArrayInitialized(ByVal v As Variant) As Boolean
+    On Error GoTo EH
+    If IsArray(v) Then
+        ' 境界に触れてみる（未割り当てだとエラー）
+        Dim lb As Long
+        lb = LBound(v, 1)
+        IsArrayInitialized = True
+        Exit Function
+    End If
+EH:
+    IsArrayInitialized = False
+End Function
+
+' 型付き動的配列（例：Long()）が「割り当て済み」か判定
+Public Function IsAllocated_Long(ByRef arr() As Long) As Boolean
+    On Error GoTo EH
+    Dim lb As Long
+    lb = LBound(arr, 1)   ' 未割り当てだとここでエラー
+    IsAllocated_Long = True
+    Exit Function
+EH:
+    IsAllocated_Long = False
+End Function
