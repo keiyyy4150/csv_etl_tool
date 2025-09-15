@@ -1,0 +1,47 @@
+Option Explicit
+
+'=== ショートカット割り当て（任意） ===
+Public Sub SetupShortcuts()
+    Application.OnKey "^+I", "ImportFiles"   ' Ctrl+Shift+I
+    Application.OnKey "^+P", "ProcessData"   ' Ctrl+Shift+P
+    Application.OnKey "^+D", "ClearData"     ' Ctrl+Shift+C
+    Application.OnKey "^+E", "ExportCSV"     ' Ctrl+Shift+E
+End Sub
+
+Public Sub RemoveShortcuts()
+    Application.OnKey "^+I"
+    Application.OnKey "^+P"
+    Application.OnKey "^+C"
+    Application.OnKey "^+E"
+End Sub
+
+'=== 画面ボタン用 ===
+Public Sub SetPipeline_Main()
+    UsePipelineMain
+    MsgBox "パイプラインを Main に切替えました。", vbInformation
+End Sub
+
+Public Sub SetPipeline_List()
+    UsePipelineList
+    MsgBox "パイプラインを List に切替えました。", vbInformation
+End Sub
+
+Public Sub Btn_ChooseEncoding()
+    ChooseEncoding
+End Sub
+
+Public Sub Btn_Import()
+    ImportFiles
+End Sub
+
+Public Sub Btn_Process()
+    ProcessData
+End Sub
+
+Public Sub Btn_Clear()
+    ClearData
+End Sub
+
+Public Sub Btn_Export()
+    ExportCSV
+End Sub
