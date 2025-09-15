@@ -1,0 +1,18 @@
+Option Explicit
+
+'=== ログ出力（1日1ファイル） ===
+Public Sub WriteLog(level As String, message As String)
+    On Error Resume Next
+    Dim basePath As String, logDir As String, logPath As String
+    basePath = ThisWorkbook.Path
+    logDir = basePath & "\" & LOG_FOLDER & "\"
+    EnsureFolder logDir
+    logPath = logDir & "tool_" & Format(Date, "yyyymmdd") & ".log"
+    
+    Dim f As Integer
+    f = FreeFile
+    Open logPath For Append As #f
+    Print #f, Format(Now, "yyyy-mm-dd HH:nn:ss"); " [" & level & "] "; message
+    Close #f
+    On Error GoTo 0
+End Sub
