@@ -26,7 +26,7 @@ Public Function ReadMappingFromTableName(mapTableName As String) As Boolean
     Dim lastRow As Long: lastRow = lo.ListRows.Count
     Dim lastCol As Long: lastCol = lo.ListColumns.Count
     
-    ' A〜F 固定（※D列ロジックは廃止）
+    ' A?F 固定（※D列ロジックは廃止）
     ReDim Map_OutCols(1 To lastRow)   ' B:出力カラム名
     ReDim Map_DataType(1 To lastRow)  ' C:型
     ReDim Map_IsKey(1 To lastRow)     ' D:キー（○）
@@ -35,12 +35,12 @@ Public Function ReadMappingFromTableName(mapTableName As String) As Boolean
     
     Dim r As Long
     For r = 1 To lastRow
-        Map_OutCols(r)  = CStr(body.Cells(r, 2).Value)                     ' B
+        Map_OutCols(r) = CStr(body.Cells(r, 2).Value)                      ' B
         Map_DataType(r) = UCase$(Trim$(CStr(body.Cells(r, 3).Value)))      ' C
-        Map_IsKey(r)    = (CStr(body.Cells(r, 4).Value) = "○")             ' D
-        Map_Mode(r)     = UCase$(Trim$(CStr(body.Cells(r, 5).Value)))      ' E
+        Map_IsKey(r) = (CStr(body.Cells(r, 4).Value) = "○")                ' D
+        Map_Mode(r) = UCase$(Trim$(CStr(body.Cells(r, 5).Value)))          ' E
         If Len(Map_Mode(r)) = 0 Then Map_Mode(r) = "VALUE"
-        Map_Def(r)      = CStr(body.Cells(r, 6).Value)                     ' F
+        Map_Def(r) = CStr(body.Cells(r, 6).Value)                          ' F
     Next
     
     ' G列以降：テーブル名（1行目ヘッダ）
@@ -77,7 +77,7 @@ End Function
 Public Sub BuildKeyIndexes()
     ' 親辞書（テーブル名 -> 単一行辞書 / 複数行辞書）を初期化
     Set KeyIndexSingle = CreateObject("Scripting.Dictionary")
-    Set KeyIndexMulti  = CreateObject("Scripting.Dictionary")
+    Set KeyIndexMulti = CreateObject("Scripting.Dictionary")
     
     Dim t As Long
     If (Not Not Map_TblNames) = 0 Then Exit Sub ' テーブル名未定義なら何もしない
@@ -90,7 +90,7 @@ Public Sub BuildKeyIndexes()
         If Not TableData.Exists(tblName) Then
             WriteLog "ERROR", "BuildKeyIndexes: table not loaded: " & tblName
             KeyIndexSingle(tblName) = CreateObject("Scripting.Dictionary")
-            KeyIndexMulti(tblName)  = CreateObject("Scripting.Dictionary")
+            KeyIndexMulti(tblName) = CreateObject("Scripting.Dictionary")
             GoTo CONT_T
         End If
         
@@ -99,7 +99,7 @@ Public Sub BuildKeyIndexes()
         If Not IsArray(arr) Then
             WriteLog "ERROR", "BuildKeyIndexes: table is not array: " & tblName
             KeyIndexSingle(tblName) = CreateObject("Scripting.Dictionary")
-            KeyIndexMulti(tblName)  = CreateObject("Scripting.Dictionary")
+            KeyIndexMulti(tblName) = CreateObject("Scripting.Dictionary")
             GoTo CONT_T
         End If
         On Error GoTo BAD_ARRAY
@@ -109,7 +109,7 @@ Public Sub BuildKeyIndexes()
         If rUB1 < 2 Or rUB2 < 1 Then
             WriteLog "ERROR", "BuildKeyIndexes: invalid array shape: " & tblName
             KeyIndexSingle(tblName) = CreateObject("Scripting.Dictionary")
-            KeyIndexMulti(tblName)  = CreateObject("Scripting.Dictionary")
+            KeyIndexMulti(tblName) = CreateObject("Scripting.Dictionary")
             GoTo CONT_T
         End If
         
@@ -154,7 +154,7 @@ Public Sub BuildKeyIndexes()
         End If
         
         Set KeyIndexSingle(tblName) = dict1
-        Set KeyIndexMulti(tblName)  = dictM
+        Set KeyIndexMulti(tblName) = dictM
         
 CONT_T:
         ' 次のテーブルへ
@@ -165,7 +165,7 @@ BAD_ARRAY:
     On Error GoTo 0
     WriteLog "ERROR", "BuildKeyIndexes: UBound failed (not 2D array?) table=" & Map_TblNames(t)
     KeyIndexSingle(Map_TblNames(t)) = CreateObject("Scripting.Dictionary")
-    KeyIndexMulti(Map_TblNames(t))  = CreateObject("Scripting.Dictionary")
+    KeyIndexMulti(Map_TblNames(t)) = CreateObject("Scripting.Dictionary")
 End Sub
 
 '=== ヘッダ正規化 & 列番号探し（共通） ===
@@ -176,9 +176,9 @@ Private Function Norm(ByVal s As String) As String
     Norm = s
 End Function
 
-Public Function FindColumnIndex(arr As Variant, colName As String) As Long
+Public Function FindColumnIndex(arr As Variant, ColName As String) As Long
     Dim c As Long, target As String
-    target = Norm(colName)
+    target = Norm(ColName)
     For c = 1 To UBound(arr, 2)
         If Norm(CStr(arr(1, c))) = target Then
             FindColumnIndex = c
@@ -186,4 +186,43 @@ Public Function FindColumnIndex(arr As Variant, colName As String) As Long
         End If
     Next
     FindColumnIndex = 0
+End Function
+
+
+'==============================
+' ベーステーブル選定（キー定義が成立している最初のテーブル。無ければ先頭）
+'  - tblNames : H列以降のテーブル名配列 Map_TblNames()
+'  - srcCols  : マッピングの元カラム   Map_SrcCols(行=出力列, 列=テーブル)
+'  - isKey    : キー列フラグ配列       Map_IsKey()
+' 返り値      : ベーステーブル名（空配列時は ""）
+'==============================
+Public Function PickBaseTableName(tblNames() As String, srcCols As Variant, isKey() As Boolean) As String
+    Dim t As Long, i As Long
+    ' テーブル名が未設定なら空を返す
+    If (Not Not tblNames) = 0 Then
+        PickBaseTableName = ""
+        Exit Function
+    End If
+    
+    ' どれか1つでも「キー=○」かつ該当テーブルに元カラムが指定されている最初のテーブルを採用
+    For t = LBound(tblNames) To UBound(tblNames)
+        For i = LBound(isKey) To UBound(isKey)
+            If isKey(i) Then
+                ' srcCols(行=i, 列=t) が範囲内か確認
+                If (Not IsEmpty(srcCols)) Then
+                    On Error Resume Next
+                    Dim hasCol As Boolean
+                    hasCol = (Len(Trim$(CStr(srcCols(i, t)))) > 0)
+                    On Error GoTo 0
+                    If hasCol Then
+                        PickBaseTableName = tblNames(t)
+                        Exit Function
+                    End If
+                End If
+            End If
+        Next i
+    Next t
+    
+    ' 上で見つからなければ、先頭を採用
+    PickBaseTableName = tblNames(LBound(tblNames))
 End Function
