@@ -246,5 +246,3 @@ Public Function GetListObjectByName(tableName As String) As ListObject
     Next
     Set GetListObjectByName = Nothing
 End Function
-
-
