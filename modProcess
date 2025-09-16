@@ -72,44 +72,30 @@ Public Sub ImportFiles()
     Dim ok As Boolean
     ok = ReadMappingFromTableName(CurrentMappingTableName)
     If Not ok Then
-        WriteLog "ERROR", "Mapping read failed"
         MsgBox "Mapping の読み取りに失敗しました。", vbCritical
         Exit Sub
     End If
     
-    WriteLog "INFO", "Mapping read succeeded"
-    
     Dim importPath As String: importPath = ThisWorkbook.Path & "\" & IMPORT_FOLDER & "\"
     EnsureFolder ThisWorkbook.Path & "\" & LOG_FOLDER & "\"
-    WriteLog "INFO", "ImportFiles: start / Encoding=" & CurrentEncodingMode & " / MappingTable=" & CurrentMappingTableName
     
     Set TableData = CreateObject("Scripting.Dictionary")
-    If Not LoadAllCsv(importPath, Map_TblNames, TableData) Then
-        WriteLog "ERROR", "LoadAllCsv failed"
-        Exit Sub
-    End If
+    If Not LoadAllCsv(importPath, Map_TblNames, TableData) Then Exit Sub
     
-    WriteLog "INFO", "LoadAllCsv succeeded"
+    ApplyFiltersIfExist
     
-    ' キー辞書（Single & Multi）
     BuildKeyIndexes
     
-    WriteLog "INFO", "BuildKey succeeded"
-    
-    ' ベーステーブル選定（キー成立の最初、なければ先頭）
     m_baseTblName = PickBaseTableName(Map_TblNames, Map_SrcCols, Map_IsKey)
     If Len(m_baseTblName) = 0 And (Not Not Map_TblNames) <> 0 Then m_baseTblName = Map_TblNames(0)
-    WriteLog "INFO", "BaseTable=" & m_baseTblName
-    
-    WriteLog "INFO", "PickBaseTableName succeeded"
      
-    ' 無加工JOIN
+    '=== ここでモードを無視して無加工JOIN ===
+    IgnoreModeOnImport = True
     RawJoined = BuildJoinedRaw(m_baseTblName)
+    IgnoreModeOnImport = False
+    
     HasRaw = True: IsProcessed = False
     
-    WriteLog "INFO", "RawJoined succeeded"
-    
-    ' Masterへ貼付
     Dim masterLo As ListObject
     Set masterLo = GetListObjectByName(CurrentMasterTableName)
     If masterLo Is Nothing Then
@@ -118,34 +104,11 @@ Public Sub ImportFiles()
     End If
     PasteToMasterByTable masterLo, RawJoined
     
-    WriteLog "INFO", "masterLo succeeded"
-    
-    WriteLog "INFO", "ImportFiles: done / rows=" & UBound(RawJoined, 1) & " / cols=" & UBound(RawJoined, 2) & " / elapsed=" & Format(Now - tStart, "hh:nn:ss")
     MsgBox "ファイルインポート完了（無加工をMasterへ反映）", vbInformation
     Exit Sub
 EH:
-    WriteLog "ERROR", "ImportFiles error: " & Err.Number & " " & Err.Description
     MsgBox "ImportFilesでエラー: " & Err.Description, vbCritical
 End Sub
-
-' ベーステーブル選定
-Private Function PickBaseTableName(tblNames() As String, srcCols As Variant, isKey() As Boolean) As String
-    Dim t As Long, i As Long
-    If (Not Not tblNames) = 0 Then Exit Function
-    For t = LBound(tblNames) To UBound(tblNames)
-        For i = LBound(isKey) To UBound(isKey)
-            If isKey(i) Then
-                If UBound(srcCols, 2) >= t Then
-                    If Len(srcCols(i, t)) > 0 Then
-                        PickBaseTableName = tblNames(t)
-                        Exit Function
-                    End If
-                End If
-            End If
-        Next
-    Next
-    PickBaseTableName = tblNames(LBound(tblNames))
-End Function
 
 '==============================
 ' Process：加工適用 → Masterへ
@@ -195,10 +158,9 @@ Public Sub ClearData()
     Dim prevUpd As Boolean, prevEvt As Boolean, prevDisp As Boolean
     Dim t0 As Double: t0 = Timer
 
-    ' パイプライン未設定なら既定へ
     If Len(CurrentMasterTableName) = 0 Then UsePipelineMain
 
-    ' アプリ状態を退避＆高速化設定
+    ' 高速化設定の退避
     On Error Resume Next
     prevUpd = Application.ScreenUpdating
     prevEvt = Application.EnableEvents
@@ -214,22 +176,21 @@ Public Sub ClearData()
     Dim lo As ListObject
     Set lo = GetListObjectByName(CurrentMasterTableName)
     If Not lo Is Nothing Then
-        ' フィルタがかかっていたら解除（削除速度が上がる & エラー回避）
+        ' フィルタ解除
         On Error Resume Next
         If Not lo.AutoFilter Is Nothing Then lo.AutoFilter.ShowAllData
         On Error GoTo 0
 
-        If Not lo.DataBodyRange Is Nothing Then
-            lo.DataBodyRange.Delete
-        End If
+        ' ←ここがポイント：行を「削除」せず、既定サイズに「リサイズ」して中身だけ空にする
+        ResetMasterSize lo   ' B4 の値（空なら 20000 行）に合わせてリサイズ＆ClearContents
     End If
 
-    ' 中間データの解放（未初期化でも安全に呼べるよう注意）
+    ' 中間データの解放
     HasRaw = False
     IsProcessed = False
 
     On Error Resume Next
-    If (Not Not RawJoined) <> 0 Then Erase RawJoined  ' 配列なら解放
+    If (Not Not RawJoined) <> 0 Then Erase RawJoined
     If (Not Not m_baseRowIdx) <> 0 Then Erase m_baseRowIdx
     On Error GoTo 0
 
@@ -239,9 +200,8 @@ Public Sub ClearData()
     Set KeyIndexMulti = Nothing
 
     WriteLog "INFO", "ClearData: cleared in " & Format(Timer - t0, "0.00") & "s"
-
 DONE:
-    ' アプリ状態を戻す
+    ' 設定を戻す
     On Error Resume Next
     Application.ScreenUpdating = prevUpd
     Application.EnableEvents = prevEvt
@@ -264,6 +224,7 @@ EH:
 End Sub
 
 
+
 '==============================
 ' Masterへ貼付（行数だけ合わせて一括代入）
 '==============================
@@ -280,4 +241,3 @@ Public Sub PasteToMasterByTable(masterTbl As ListObject, dataArr As Variant)
     masterTbl.Resize newRange
     masterTbl.DataBodyRange.Value = dataArr
 End Sub
-
