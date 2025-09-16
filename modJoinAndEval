@@ -45,9 +45,9 @@ Private Function Norm(ByVal s As String) As String
     Norm = s
 End Function
 
-Public Function FindColumnIndex(arr As Variant, colName As String) As Long
+Public Function FindColumnIndex(arr As Variant, ColName As String) As Long
     Dim c As Long, target As String
-    target = Norm(colName)
+    target = Norm(ColName)
     For c = 1 To UBound(arr, 2)
         If Norm(CStr(arr(1, c))) = target Then
             FindColumnIndex = c
@@ -214,7 +214,8 @@ Public Function BuildJoinedRaw(baseTbl As String) As Variant
             outRow = outRow + 1
             m_baseRowIdx(outRow) = r
             For c = 1 To outColsCnt
-                result(outRow, c) = BuildValueModeRaw(c, baseTbl, r, myKey, k)
+                ' ★ ここを forceJoinMultiple:=True に
+                result(outRow, c) = BuildValueModeRaw(c, baseTbl, r, myKey, k, True)
             Next c
         Next k
     Next r
@@ -247,13 +248,14 @@ End Function
 ' VALUE/CONCAT の raw 取得（k番目のマッチを考慮）
 '==============================
 Public Function BuildValueModeRaw(colIndex As Long, baseTbl As String, baseRow As Long, myKey As String, _
-                                  Optional matchIndex As Long = 1) As Variant
+                                  Optional matchIndex As Long = 1, _
+                                  Optional forceJoinMultiple As Boolean = False) As Variant
     Dim t As Long, v As Variant
     v = ""
     If (Not Not Map_TblNames) = 0 Then BuildValueModeRaw = v: Exit Function
 
-    Dim isValue As Boolean
-    isValue = (UCase$(Map_Mode(colIndex)) = "VALUE" Or Len(Map_Mode(colIndex)) = 0)
+    Dim doJoin As Boolean
+    doJoin = forceJoinMultiple Or (UCase$(Map_Mode(colIndex)) = "VALUE" Or Len(Map_Mode(colIndex)) = 0)
 
     For t = LBound(Map_TblNames) To UBound(Map_TblNames)
         Dim names As Collection: Set names = SafeGetSrcColNames(colIndex, t)
@@ -272,7 +274,7 @@ Public Function BuildValueModeRaw(colIndex As Long, baseTbl As String, baseRow A
                 End If
                 If ci > 0 Then
                     valStr = CStr(arr(baseRow, ci))
-                    If isValue Then
+                    If doJoin Then
                         If Len(valStr) > 0 Then
                             If Len(acc) = 0 Then acc = valStr Else acc = acc & vbLf & valStr
                         End If
@@ -281,7 +283,7 @@ Public Function BuildValueModeRaw(colIndex As Long, baseTbl As String, baseRow A
                     End If
                 End If
             Next
-            If isValue Then v = acc
+            If doJoin Then v = acc
             If Len(CStr(v)) > 0 Then BuildValueModeRaw = v: Exit Function
 
         Else
@@ -290,7 +292,7 @@ Public Function BuildValueModeRaw(colIndex As Long, baseTbl As String, baseRow A
             For j2 = 1 To names.Count
                 nm = names(j2)
                 got = GetValueFromTableMulti(Map_TblNames(t), nm, myKey, matchIndex)
-                If isValue Then
+                If doJoin Then
                     If Len(got) > 0 Then
                         If Len(acc2) = 0 Then acc2 = got Else acc2 = acc2 & vbLf & got
                     End If
@@ -298,7 +300,7 @@ Public Function BuildValueModeRaw(colIndex As Long, baseTbl As String, baseRow A
                     If Len(got) > 0 Then v = got: Exit For
                 End If
             Next
-            If isValue Then v = acc2
+            If doJoin Then v = acc2
             If Len(CStr(v)) > 0 Then BuildValueModeRaw = v: Exit Function
         End If
 CONT_T:
@@ -507,9 +509,11 @@ Private Function EvalIFLine(ByVal line As String, baseTbl As String, baseRow As 
     End Select
 
     If ok Then
-        EvalIFLine = thenText
+        ' ★ thenText 内の {tbl.col} を展開
+        EvalIFLine = ApplyTemplate(thenText, baseTbl, baseRow, myKey, processed, outColIndex)
     Else
-        EvalIFLine = elseText
+        ' ★ elseText 内の {tbl.col} を展開
+        EvalIFLine = ApplyTemplate(elseText, baseTbl, baseRow, myKey, processed, outColIndex)
     End If
 End Function
 
@@ -739,3 +743,44 @@ Private Function FinalizeByType(ByVal s As String, ByVal dataType As String) As 
     End Select
 End Function
 
+'==============================
+' 追加：インポート専用の値取得
+'==============================
+Public Function BuildRawValueIgnoringMode(colIndex As Long, baseTbl As String, baseRow As Long, myKey As String, _
+                                          Optional matchIndex As Long = 1) As String
+    Dim t As Long, acc As String: acc = ""
+    For t = LBound(Map_TblNames) To UBound(Map_TblNames)
+        Dim names As Collection: Set names = SafeGetSrcColNames(colIndex, t)
+        If names.Count = 0 Then GoTo CONT_T
+        
+        If Map_TblNames(t) = baseTbl Then
+            Dim arr As Variant: arr = TableData(baseTbl)
+            Dim j As Long, nm As String, ci As Long, v As String
+            For j = 1 To names.Count
+                nm = names(j)
+                If IsNumeric(nm) Then
+                    ci = CLng(nm)
+                Else
+                    ci = FindColumnIndex(arr, nm)
+                End If
+                If ci > 0 Then
+                    v = CStr(arr(baseRow, ci))
+                    If Len(v) > 0 Then
+                        If Len(acc) = 0 Then acc = v Else acc = acc & vbLf & v
+                    End If
+                End If
+            Next
+        Else
+            Dim j2 As Long, nm2 As String, got As String
+            For j2 = 1 To names.Count
+                nm2 = names(j2)
+                got = GetValueFromTableMulti(Map_TblNames(t), nm2, myKey, matchIndex)
+                If Len(got) > 0 Then
+                    If Len(acc) = 0 Then acc = got Else acc = acc & vbLf & got
+                End If
+            Next
+        End If
+CONT_T:
+    Next
+    BuildRawValueIgnoringMode = acc
+End Function
