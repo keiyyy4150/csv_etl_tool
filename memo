@@ -1,1 +1,305 @@
-メモ
+いいですね、では「定義ID＋Definitionsシート（1セル＝1ロジック行）」を採用する前提で、必要最小限の改修に絞って“完成コード”をお渡しします。
+
+変更が必要なのは以下の2点だけです。
+	1.	新規モジュール：modDefinitions（Definitionsシートから定義文字列を組み立てる）
+	2.	既存モジュールの関数差し替え：modMappingHelper 内の ReadMappingFromTableName（「定義ID」列があればDefinitionsを参照／なければ従来の「定義」セル直書きを使う）
+
+ほかのモジュール（modJoinAndEval など）はそのままでOKです。既に SplitDefToParts / SplitExprToLines / EvaluateExpr が行単位で逐次評価の設計なので、Definitionsシートで同じ定義IDに複数行を割り当てる運用がそのまま馴染みます。
+
+⸻
+
+1) 追加：modDefinitions（新規）
+
+Option Explicit
+
+'=========================================================
+' Definitionsシートから「定義ID」に対応するロジック群を連結して返す
+' シート要件（ListObject名："Definitions" 推奨）：
+'   見出し： 定義ID / バージョン / 行No / ロジック / （備考 任意）
+'   - バージョン列は任意。存在しなければ全行を対象にする
+'   - 同じ定義IDの中で、最大のバージョン番号を採用
+'   - 行No昇順で「ロジック」を vbLf 連結して返却
+'=========================================================
+
+Private Const DEF_LO_NAME As String = "Definitions"  ' ListObject名（必要に応じて変更可）
+
+'== ListObject をブック全体から名前で取得（既存の同名関数があればそれを使ってOK）
+Private Function GetListObjectByName(nameOrRange As String) As ListObject
+    Dim ws As Worksheet, lo As ListObject
+    For Each ws In ThisWorkbook.Worksheets
+        For Each lo In ws.ListObjects
+            If StrComp(lo.Name, nameOrRange, vbTextCompare) = 0 Then
+                Set GetListObjectByName = lo
+                Exit Function
+            End If
+        Next
+    Next
+    Set GetListObjectByName = Nothing
+End Function
+
+'== ヘッダー名→列番号を解決（見出しは完全一致／前後空白は無視）
+Private Function FindHeaderIndex(lo As ListObject, headerName As String) As Long
+    Dim i As Long, s As String
+    For i = 1 To lo.HeaderRowRange.Columns.Count
+        s = Trim$(CStr(lo.HeaderRowRange.Cells(1, i).Value))
+        If StrComp(s, headerName, vbTextCompare) = 0 Then
+            FindHeaderIndex = i
+            Exit Function
+        End If
+    Next
+    FindHeaderIndex = 0
+End Function
+
+'== 指定IDの最大バージョン番号を探す（なければ1相当）
+Private Function MaxVersionForId(lo As ListObject, idxId As Long, idxVer As Long, defId As String) As Long
+    Dim maxv As Long: maxv = 1
+    Dim r As Range, v As Variant, idv As String, vv As Variant
+    If lo.DataBodyRange Is Nothing Then MaxVersionForId = 1: Exit Function
+
+    For Each r In lo.DataBodyRange.Rows
+        v = r.Cells(1, idxId).Value
+        idv = CStr(v)
+        If StrComp(idv, defId, vbTextCompare) = 0 Then
+            If idxVer > 0 Then
+                vv = r.Cells(1, idxVer).Value
+                If IsNumeric(vv) Then
+                    If CLng(vv) > maxv Then maxv = CLng(vv)
+                End If
+            End If
+        End If
+    Next
+    MaxVersionForId = maxv
+End Function
+
+'== 同一ID（＋最新バージョン）の行を行No昇順で結合
+Public Function BuildDefinitionFromSheet(defId As String) As String
+    Dim lo As ListObject
+    Set lo = GetListObjectByName(DEF_LO_NAME)
+    If lo Is Nothing Then
+        Err.Raise vbObjectError + 3401, , "Definitionsテーブル(" & DEF_LO_NAME & ")が見つかりません。"
+    End If
+    If lo.DataBodyRange Is Nothing Then
+        BuildDefinitionFromSheet = "": Exit Function
+    End If
+
+    ' ヘッダー列位置
+    Dim cId As Long, cVer As Long, cLine As Long, cLogic As Long
+    cId    = FindHeaderIndex(lo, "定義ID")
+    cVer   = FindHeaderIndex(lo, "バージョン")   ' 無くても良い
+    cLine  = FindHeaderIndex(lo, "行No")
+    cLogic = FindHeaderIndex(lo, "ロジック")
+    If cId = 0 Or cLine = 0 Or cLogic = 0 Then
+        Err.Raise vbObjectError + 3402, , "Definitionsの見出しは『定義ID／行No／ロジック（＋任意でバージョン）』が必要です。"
+    End If
+
+    ' 最大バージョン
+    Dim maxVer As Long
+    maxVer = MaxVersionForId(lo, cId, cVer, defId)
+
+    ' 行No→ロジック の一時格納（昇順連結のため）
+    Dim dict As Object: Set dict = CreateObject("Scripting.Dictionary")
+
+    Dim r As Range, idv As String, vv As Variant, lineNo As Long, logicText As String
+    For Each r In lo.DataBodyRange.Rows
+        idv = CStr(r.Cells(1, cId).Value)
+        If StrComp(idv, defId, vbTextCompare) = 0 Then
+            If cVer > 0 Then
+                vv = r.Cells(1, cVer).Value
+                If IsNumeric(vv) Then
+                    If CLng(vv) <> maxVer Then GoTo CONT_ROW
+                Else
+                    ' 数値でないバージョンは無視
+                    GoTo CONT_ROW
+                End If
+            End If
+
+            vv = r.Cells(1, cLine).Value
+            If Not IsNumeric(vv) Then GoTo CONT_ROW
+            lineNo = CLng(vv)
+
+            logicText = CStr(r.Cells(1, cLogic).Value)
+            If Len(Trim$(logicText)) = 0 Then GoTo CONT_ROW
+
+            ' 同じ行Noが重複していたら後勝ち
+            dict(lineNo) = logicText
+        End If
+CONT_ROW:
+    Next
+
+    If dict.Count = 0 Then
+        BuildDefinitionFromSheet = "": Exit Function
+    End If
+
+    ' 昇順でJoin
+    Dim keys() As Variant, i As Long
+    keys = dict.Keys
+    ' 簡易ソート
+    Dim j As Long, tmp As Variant
+    For i = LBound(keys) To UBound(keys) - 1
+        For j = i + 1 To UBound(keys)
+            If CLng(keys(i)) > CLng(keys(j)) Then
+                tmp = keys(i): keys(i) = keys(j): keys(j) = tmp
+            End If
+        Next
+    Next
+
+    Dim acc As String: acc = ""
+    For i = LBound(keys) To UBound(keys)
+        If Len(acc) = 0 Then
+            acc = dict(keys(i))
+        Else
+            acc = acc & vbLf & dict(keys(i))
+        End If
+    Next
+
+    BuildDefinitionFromSheet = acc
+End Function
+
+
+⸻
+
+2) 差し替え：modMappingHelper の ReadMappingFromTableName（全文）
+
+既存の実装に互換を保ちつつ、「定義ID」列が見つかったらDefinitionsシートから定義を復元するようにした版です。
+※他の関数や下部のキーインデックス構築などは変更不要ですので、この関数だけ丸ごと置き換えてください。
+
+Public Function ReadMappingFromTableName(mapTableName As String) As Boolean
+    On Error GoTo FAIL
+
+    Dim lo As ListObject
+    Set lo = GetListObjectByName(mapTableName)
+    If lo Is Nothing Then
+        MsgBox "Mappingテーブルが見つかりません: " & mapTableName, vbCritical
+        ReadMappingFromTableName = False: Exit Function
+    End If
+    If lo.DataBodyRange Is Nothing Then
+        MsgBox "Mappingテーブルにデータ行がありません: " & mapTableName, vbExclamation
+        ReadMappingFromTableName = False: Exit Function
+    End If
+
+    '--- ヘッダー列の位置解決 ---
+    Dim cNo As Long, cOut As Long, cType As Long, cKey As Long, cMode As Long
+    Dim cDef As Long, cDefId As Long
+    Dim firstColTable As Long
+
+    cNo    = FindHeaderIndex(lo, "No")
+    cOut   = FindHeaderIndex(lo, "出力カラム")
+    If cOut = 0 Then cOut = FindHeaderIndex(lo, "出力カラム名") ' 互換
+    cType  = FindHeaderIndex(lo, "データ型")
+    cKey   = FindHeaderIndex(lo, "キー")
+    cMode  = FindHeaderIndex(lo, "モード")
+    cDef   = FindHeaderIndex(lo, "定義")
+    cDefId = FindHeaderIndex(lo, "定義ID")  ' ★追加（無ければ0のまま）
+
+    If cOut = 0 Or cType = 0 Or cKey = 0 Or cMode = 0 Then
+        MsgBox "Mappingの見出しに不足があります（出力カラム／データ型／キー／モード）", vbCritical
+        ReadMappingFromTableName = False: Exit Function
+    End If
+
+    ' G列以降（＝テーブル別の元カラム群）を自動検出
+    ' 明示的に「定義」「定義ID」列がどこにあっても良いように、出力カラム等の最大列より右側で
+    Dim maxFixed As Long
+    maxFixed = Application.WorksheetFunction.Max(cNo, cOut, cType, cKey, cMode, cDef, cDefId)
+    If maxFixed < 1 Then maxFixed = 6
+    firstColTable = maxFixed + 1
+
+    Dim tblNames() As String
+    Dim t As Long, i As Long
+
+    '--- テーブル名収集（ヘッダー行の firstColTable 以降、空白で打ち切り）---
+    Dim lastHeaderCol As Long: lastHeaderCol = lo.HeaderRowRange.Columns.Count
+    Dim tn As String
+    Dim dyn As New Collection
+    For i = firstColTable To lastHeaderCol
+        tn = Trim$(CStr(lo.HeaderRowRange.Cells(1, i).Value))
+        If Len(tn) = 0 Then Exit For
+        dyn.Add tn
+    Next
+    If dyn.Count = 0 Then
+        MsgBox "Mappingに元テーブル（G列以降）の見出しがありません。", vbCritical
+        ReadMappingFromTableName = False: Exit Function
+    End If
+    ReDim tblNames(1 To dyn.Count)
+    For i = 1 To dyn.Count: tblNames(i) = CStr(dyn(i)): Next
+
+    '--- 行数・列数 ---
+    Dim rows As Long, cols As Long
+    rows = lo.DataBodyRange.Rows.Count
+    cols = dyn.Count
+
+    '--- 配列確保（Public配列は既存のものを使用想定） ---
+    ReDim Map_No(1 To rows)
+    ReDim Map_OutCols(1 To rows)
+    ReDim Map_DataType(1 To rows)
+    ReDim Map_Key(1 To rows)
+    ReDim Map_Mode(1 To rows)
+    ReDim Map_Def(1 To rows)
+    ReDim Map_TblNames(1 To cols)
+    ReDim Map_SrcCols(1 To rows, 1 To cols)
+
+    ' テーブル名を保存
+    For t = 1 To cols: Map_TblNames(t) = tblNames(t): Next
+
+    '--- 本体読み込み ---
+    Dim r As Long, body As Range
+    Set body = lo.DataBodyRange
+
+    For r = 1 To rows
+        If cNo > 0 Then Map_No(r) = body.Cells(r, cNo).Value
+        Map_OutCols(r)  = Trim$(CStr(body.Cells(r, cOut).Value))
+        Map_DataType(r) = UCase$(Trim$(CStr(body.Cells(r, cType).Value)))
+        Map_Key(r)      = UCase$(Trim$(CStr(body.Cells(r, cKey).Value)))
+        Map_Mode(r)     = UCase$(Trim$(CStr(body.Cells(r, cMode).Value)))
+
+        '=== 定義（定義IDがあればDefinitionsを優先、なければ従来の「定義」セルを使う） ===
+        Dim defText As String, defId As String
+        defId = ""
+        If cDefId > 0 Then defId = Trim$(CStr(body.Cells(r, cDefId).Value))
+        If Len(defId) > 0 Then
+            On Error GoTo DEF_ERR
+            defText = BuildDefinitionFromSheet(defId)
+            On Error GoTo FAIL
+        Else
+            If cDef > 0 Then defText = CStr(body.Cells(r, cDef).Value) Else defText = ""
+        End If
+        Map_Def(r) = defText
+
+        '=== 元カラム群（G列以降の相当箇所） ===
+        For t = 1 To cols
+            Map_SrcCols(r, t) = CStr(body.Cells(r, firstColTable - 1 + t).Value)
+        Next
+    Next r
+
+    ReadMappingFromTableName = True
+    Exit Function
+
+DEF_ERR:
+    MsgBox "Definitions参照に失敗しました。定義ID=" & defId & " / " & Err.Description, vbCritical
+    ReadMappingFromTableName = False
+    Exit Function
+
+FAIL:
+    MsgBox "ReadMappingFromTableName でエラー: " & Err.Description, vbCritical
+    ReadMappingFromTableName = False
+End Function
+
+補足
+	•	上記関数内で使っている FindHeaderIndex は modDefinitions に含めましたが、既に同等の関数がある場合はそちらを使ってOKです（重複するなら片方を削除）。
+	•	「G列以降＝元テーブル名」というルールをヘッダー走査で自動検出にしているので、定義ID 列をどこに追加しても動きます。
+	•	定義ID が空の行は従来通り「定義」セルの直書きで処理されます（後方互換）。
+
+⸻
+
+使い方（運用まとめ）
+	•	Mapping_Main／Mapping_List に 「定義ID」列を追加（任意の位置でOK）。
+	•	定義ID が入っていれば Definitions シートから参照
+	•	空白なら 「定義」セルの中身を使用（従来互換）
+	•	Definitions シート（ListObject名 Definitions を推奨）
+	•	見出し：定義ID / バージョン / 行No / ロジック（＋備考は任意）
+	•	同じ 定義ID のうち、**最大の「バージョン」**を採用
+	•	行No昇順に ロジック を vbLf 連結して「定義」文字列を構成
+	•	1セル＝1ロジック（IFを1行ずつ書けます。複数行が条件成立なら連結されます）
+
+⸻
+
+必要なら、Definitions の ListObject 名やヘッダー文言（例：「バージョン」を「Ver」にしたい等）を定数化して差し替えられるようにもできます。まずは上記コードで動かし、運用に合わせて微調整しましょう。
