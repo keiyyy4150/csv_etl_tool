@@ -1,18 +1,20 @@
-まだインデックスエラーが出ます。
-Mapping_Mainのカラム構成はNo、出力カラム、データ型、キー、モード、定義ID、それ以降のカラムはインポートファイルのファイル名が並んでます。
+ありがとうございます。状況からみて主因はほぼ2つのどちらかです。
+	1.	Map_IsKey が未割り当て or サイズ不一致（＝「キー」列の真偽配列を作っていない／前回の配列が残っている）
+	2.	CSV 読み込み配列 TableData(tblName) の下限が 0 始まりになっているのに、FindColumnIndex や BuildKeyIndexes 側が 1 固定で参照している
 
-modMappingHelperは次の通りです。
+どちらでも BuildKeyIndexes の「3) キー列ヘッダーの位置集め」で下付きエラーが起きやすいです。
 
-Option Explicit
+⸻
 
-'==============================
-' Mappingテーブルを読み込み、Definitionsシートの定義IDから「定義」を復元する
-' ・「定義」列は廃止（使わない）
-' ・「定義ID」列は必須（空ならエラー）
-' ・G列以降などの固定概念に依存せず、ヘッダー走査で元テーブル名の開始位置を自動検出
-' 既存の公開配列（Map_*）はそのまま使用する前提：
-'   Map_No(), Map_OutCols(), Map_DataType(), Map_Key(), Map_Mode(), Map_Def(), Map_TblNames(), Map_SrcCols(,)
-'==============================
+対応：落ちどころをすべて潰す差し替え
+
+以下の3か所を丸ごと置き換えてください（modMappingHelper）。
+	•	ReadMappingFromTableName：Map_IsKey を確実に再確保＆設定
+	•	BuildKeyIndexes：配列の LBound/UBound を厳密化（0 始まりでも安全）
+	•	FindColumnIndex：ヘッダー走査を LBound 起点に変更
+
+1) ReadMappingFromTableName（置き換え）
+
 Public Function ReadMappingFromTableName(mapTableName As String) As Boolean
     On Error GoTo FAIL
 
@@ -31,20 +33,20 @@ Public Function ReadMappingFromTableName(mapTableName As String) As Boolean
     Dim cNo As Long, cOut As Long, cType As Long, cKey As Long, cMode As Long
     Dim cDefId As Long
 
-    cNo = FindHeaderIndexLocal(lo, "No")                            ' 任意（存在すれば読む）
-    cOut = FindHeaderIndexLocal(lo, "出力カラム")
-    If cOut = 0 Then cOut = FindHeaderIndexLocal(lo, "出力カラム名") ' 互換
-    cType = FindHeaderIndexLocal(lo, "データ型")
-    cKey = FindHeaderIndexLocal(lo, "キー")
-    cMode = FindHeaderIndexLocal(lo, "モード")
-    cDefId = FindHeaderIndexLocal(lo, "定義ID")                     ' 必須（ただしVALUE行は空OK）
+    cNo    = FindHeaderIndexLocal(lo, "No")                            ' 任意
+    cOut   = FindHeaderIndexLocal(lo, "出力カラム")
+    If cOut = 0 Then cOut = FindHeaderIndexLocal(lo, "出力カラム名")   ' 互換
+    cType  = FindHeaderIndexLocal(lo, "データ型")
+    cKey   = FindHeaderIndexLocal(lo, "キー")
+    cMode  = FindHeaderIndexLocal(lo, "モード")
+    cDefId = FindHeaderIndexLocal(lo, "定義ID")                        ' 必須（VALUEは空OK）
 
     If cOut = 0 Or cType = 0 Or cKey = 0 Or cMode = 0 Or cDefId = 0 Then
         MsgBox "Mappingの見出しに不足があります（出力カラム／データ型／キー／モード／定義ID）", vbCritical
         ReadMappingFromTableName = False: Exit Function
     End If
 
-    '--- 元テーブル名の開始位置を決定（固定列の最大の右隣） ---
+    '--- 元テーブル名開始位置（固定列の最大の右隣） ---
     Dim maxFixed As Long
     maxFixed = Application.WorksheetFunction.Max(ArrayNZ(cNo), cOut, cType, cKey, cMode, cDefId)
     If maxFixed < 1 Then maxFixed = 6
@@ -64,9 +66,9 @@ Public Function ReadMappingFromTableName(mapTableName As String) As Boolean
         ReadMappingFromTableName = False: Exit Function
     End If
 
-    '--- 配列確保 ---
+    '--- 配列確保（★ここで必ず再確保する：サイズ不一致・残骸を防止） ---
     Dim rows As Long, cols As Long, t As Long, r As Long
-    rows = lo.DataBodyRange.rows.Count
+    rows = lo.DataBodyRange.Rows.Count
     cols = dyn.Count
 
     ReDim Map_No(1 To rows)
@@ -75,6 +77,7 @@ Public Function ReadMappingFromTableName(mapTableName As String) As Boolean
     ReDim Map_Key(1 To rows)
     ReDim Map_Mode(1 To rows)
     ReDim Map_Def(1 To rows)
+    ReDim Map_IsKey(1 To rows)                  ' ★追加：キー真偽の再確保
     ReDim Map_TblNames(1 To cols)
     ReDim Map_SrcCols(1 To rows, 1 To cols)
 
@@ -88,17 +91,20 @@ Public Function ReadMappingFromTableName(mapTableName As String) As Boolean
 
     For r = 1 To rows
         If cNo > 0 Then Map_No(r) = body.Cells(r, cNo).Value
-        Map_OutCols(r) = Trim$(CStr(body.Cells(r, cOut).Value))
+        Map_OutCols(r)  = Trim$(CStr(body.Cells(r, cOut).Value))
         Map_DataType(r) = UCase$(Trim$(CStr(body.Cells(r, cType).Value)))
-        Map_Key(r) = UCase$(Trim$(CStr(body.Cells(r, cKey).Value)))
-        Map_Mode(r) = UCase$(Trim$(CStr(body.Cells(r, cMode).Value)))
+        Map_Key(r)      = Trim$(CStr(body.Cells(r, cKey).Value))
+        Map_Mode(r)     = UCase$(Trim$(CStr(body.Cells(r, cMode).Value)))
+
+        ' ★キー真偽を多言語・記号に寛容に判定
+        Map_IsKey(r) = IsKeyTrue(Map_Key(r))
 
         modeVal = Map_Mode(r)
         defId = Trim$(CStr(body.Cells(r, cDefId).Value))
 
         If Len(defId) = 0 Then
             If modeVal = "VALUE" Then
-                defText = ""   ' VALUEは加工なし（Definitions参照不要）
+                defText = ""   ' VALUEは加工なし
             Else
                 MsgBox "定義IDが未入力ですが、モード=" & modeVal & " の行があります。" & vbCrLf & _
                        "No=" & CStr(IIf(cNo > 0, body.Cells(r, cNo).Value, r)), vbCritical
@@ -131,117 +137,87 @@ FAIL:
     ReadMappingFromTableName = False
 End Function
 
-'==================== ローカルユーティリティ ====================
-
-Private Function GetListObjectByNameLocal(nameOrRange As String) As ListObject
-    Dim ws As Worksheet, lo As ListObject
-    For Each ws In ThisWorkbook.Worksheets
-        For Each lo In ws.ListObjects
-            If StrComp(lo.name, nameOrRange, vbTextCompare) = 0 Then
-                Set GetListObjectByNameLocal = lo
-                Exit Function
-            End If
-        Next
-    Next
-    Set GetListObjectByNameLocal = Nothing
+' キー判定（○/◯/●/1/TRUE/YES/Y などを許容）
+Private Function IsKeyTrue(ByVal s As String) As Boolean
+    Dim k As String
+    k = UCase$(Trim$(s))
+    k = Replace$(k, "〇", "○")        ' 全角ゼロ → 丸
+    If k = "○" Or k = "◯" Or k = "●" Then IsKeyTrue = True: Exit Function
+    If k = "1" Or k = "Y" Or k = "YES" Or k = "TRUE" Or k = "ＴＲＵＥ" Then IsKeyTrue = True: Exit Function
+    IsKeyTrue = False
 End Function
 
-Private Function FindHeaderIndexLocal(lo As ListObject, headerName As String) As Long
-    Dim i As Long, s As String
-    For i = 1 To lo.HeaderRowRange.Columns.Count
-        s = Trim$(CStr(lo.HeaderRowRange.Cells(1, i).Value))
-        If StrComp(s, headerName, vbTextCompare) = 0 Then
-            FindHeaderIndexLocal = i
-            Exit Function
-        End If
-    Next
-    FindHeaderIndexLocal = 0
-End Function
+2) BuildKeyIndexes（置き換え：LBound対応＋安全化）
 
-' WorksheetFunction.Max は配列の空(=0)が混じると不便なので0→無視の代替
-Private Function ArrayNZ(v As Variant) As Long
-    If IsNumeric(v) Then
-        ArrayNZ = CLng(v)
-    Else
-        ArrayNZ = 0
-    End If
-End Function
-
-'==============================
-' キー索引（Single: 1件、Multi: 複数行）堅牢版
-'==============================
 Public Sub BuildKeyIndexes()
-    ' 親辞書（テーブル名 -> 単一行辞書 / 複数行辞書）を初期化
     Set KeyIndexSingle = CreateObject("Scripting.Dictionary")
-    Set KeyIndexMulti = CreateObject("Scripting.Dictionary")
-    
+    Set KeyIndexMulti  = CreateObject("Scripting.Dictionary")
+
     Dim t As Long
-    If (Not Not Map_TblNames) = 0 Then Exit Sub ' テーブル名未定義なら何もしない
-    
+    If (Not Not Map_TblNames) = 0 Then Exit Sub ' 未割り当てなら何もしない
+
     For t = LBound(Map_TblNames) To UBound(Map_TblNames)
         Dim tblName As String: tblName = Map_TblNames(t)
         Dim arr As Variant
-        
-        ' 1) テーブルが読み込まれているか？
+
         If Not TableData.Exists(tblName) Then
             WriteLog "ERROR", "BuildKeyIndexes: table not loaded: " & tblName
-            KeyIndexSingle(tblName) = CreateObject("Scripting.Dictionary")
-            KeyIndexMulti(tblName) = CreateObject("Scripting.Dictionary")
+            Set KeyIndexSingle(tblName) = CreateObject("Scripting.Dictionary")
+            Set KeyIndexMulti(tblName)  = CreateObject("Scripting.Dictionary")
             GoTo CONT_T
         End If
-        
+
         arr = TableData(tblName)
-        ' 2) 配列で、かつ2次元か？
         If Not IsArray(arr) Then
             WriteLog "ERROR", "BuildKeyIndexes: table is not array: " & tblName
-            KeyIndexSingle(tblName) = CreateObject("Scripting.Dictionary")
-            KeyIndexMulti(tblName) = CreateObject("Scripting.Dictionary")
+            Set KeyIndexSingle(tblName) = CreateObject("Scripting.Dictionary")
+            Set KeyIndexMulti(tblName)  = CreateObject("Scripting.Dictionary")
             GoTo CONT_T
         End If
+
         On Error GoTo BAD_ARRAY
-        Dim rUB1 As Long, rUB2 As Long
-        rUB1 = UBound(arr, 1): rUB2 = UBound(arr, 2)
+        Dim rLB1 As Long, rUB1 As Long, cLB2 As Long, cUB2 As Long
+        rLB1 = LBound(arr, 1): rUB1 = UBound(arr, 1)
+        cLB2 = LBound(arr, 2): cUB2 = UBound(arr, 2)
         On Error GoTo 0
-        If rUB1 < 2 Or rUB2 < 1 Then
+
+        If rUB1 - rLB1 + 1 < 2 Or cUB2 - cLB2 + 1 < 1 Then
             WriteLog "ERROR", "BuildKeyIndexes: invalid array shape: " & tblName
-            KeyIndexSingle(tblName) = CreateObject("Scripting.Dictionary")
-            KeyIndexMulti(tblName) = CreateObject("Scripting.Dictionary")
+            Set KeyIndexSingle(tblName) = CreateObject("Scripting.Dictionary")
+            Set KeyIndexMulti(tblName)  = CreateObject("Scripting.Dictionary")
             GoTo CONT_T
         End If
-        
-        ' 3) このテーブルで使うキー列ヘッダーの位置を集める
+
+        '=== 3) このテーブルで使うキー列ヘッダーの位置を集める（安全化） ===
         Dim keyColIdx() As Long, kc As Long: kc = 0
-    
+
         Dim hasIsKey As Boolean, hasSrc As Boolean
         Dim lbIs As Long, ubIs As Long, lb2 As Long, ub2 As Long, tAdj As Long
-    
+
         On Error Resume Next
         lbIs = LBound(Map_IsKey): ubIs = UBound(Map_IsKey)
-        hasIsKey = (Err.Number = 0)
-        Err.Clear
-    
+        hasIsKey = (Err.Number = 0): Err.Clear
+
         lb2 = LBound(Map_SrcCols, 2): ub2 = UBound(Map_SrcCols, 2)
-        hasSrc = (Err.Number = 0)
-        Err.Clear
+        hasSrc = (Err.Number = 0): Err.Clear
         On Error GoTo 0
-    
+
         If Not hasIsKey Or Not hasSrc Then
             WriteLog "WARN", "BuildKeyIndexes: Map_IsKey or Map_SrcCols not initialized. table=" & tblName
             GoTo CONT_T
         End If
-    
-        ' Map_TblNames が 0 始まり、Map_SrcCols の第2次元が 1 始まりのケースを吸収
+
+        ' 配列下限の差異を吸収（今回のReadMappingでは両方1始まりのはずだが保険）
         If lb2 = 1 And LBound(Map_TblNames) = 0 Then
             tAdj = t + 1
         Else
             tAdj = t
         End If
-    
         If tAdj < lb2 Or tAdj > ub2 Then
             WriteLog "WARN", "BuildKeyIndexes: table index out of srcCols bound. table=" & tblName & " tAdj=" & tAdj
             GoTo CONT_T
         End If
-    
+
         Dim i As Long
         For i = lbIs To ubIs
             If Map_IsKey(i) Then
@@ -251,7 +227,7 @@ Public Sub BuildKeyIndexes()
                 If Err.Number <> 0 Then srcCol = ""
                 Err.Clear
                 On Error GoTo 0
-    
+
                 If Len(srcCol) > 0 Then
                     Dim idx As Long: idx = FindColumnIndex(arr, srcCol)
                     If idx > 0 Then
@@ -264,15 +240,15 @@ Public Sub BuildKeyIndexes()
                 End If
             End If
         Next i
-    
-        '=== 4) 実際にキーを作る（既存のまま） ===
+
+        '=== 4) 実際にキーを作る（ヘッダー行は rLB1 行、データは rLB1+1 から） ===
         Dim dict1 As Object, dictM As Object
-        Set dict1 = CreateObject("Scripting.Dictionary") ' 単一行（最初の1件）
-        Set dictM = CreateObject("Scripting.Dictionary") ' 複数行（全件、Collection）
-    
+        Set dict1 = CreateObject("Scripting.Dictionary")
+        Set dictM = CreateObject("Scripting.Dictionary")
+
         If kc > 0 Then
             Dim r As Long, keyStr As String
-            For r = 2 To rUB1
+            For r = rLB1 + 1 To rUB1
                 keyStr = BuildKeyFromRow(arr, r, keyColIdx)
                 If Len(keyStr) > 0 Then
                     If Not dict1.Exists(keyStr) Then dict1.Add keyStr, r
@@ -283,10 +259,10 @@ Public Sub BuildKeyIndexes()
         Else
             WriteLog "WARN", "BuildKeyIndexes: no key columns collected for table=" & tblName
         End If
-    
+
         Set KeyIndexSingle(tblName) = dict1
-        Set KeyIndexMulti(tblName) = dictM
-        
+        Set KeyIndexMulti(tblName)  = dictM
+
 CONT_T:
         ' 次のテーブルへ
     Next
@@ -294,66 +270,50 @@ CONT_T:
 
 BAD_ARRAY:
     On Error GoTo 0
-    WriteLog "ERROR", "BuildKeyIndexes: UBound failed (not 2D array?) table=" & Map_TblNames(t)
-    KeyIndexSingle(Map_TblNames(t)) = CreateObject("Scripting.Dictionary")
-    KeyIndexMulti(Map_TblNames(t)) = CreateObject("Scripting.Dictionary")
+    WriteLog "ERROR", "BuildKeyIndexes: UBound/LBound failed (not 2D array?) table=" & Map_TblNames(t)
+    Set KeyIndexSingle(Map_TblNames(t)) = CreateObject("Scripting.Dictionary")
+    Set KeyIndexMulti(Map_TblNames(t))  = CreateObject("Scripting.Dictionary")
 End Sub
 
-'=== ヘッダ正規化 & 列番号探し（共通） ===
+3) FindColumnIndex（置き換え：ヘッダー行の下限対応）
+
+' ヘッダ正規化 & 列番号探し（LBound対応）
 Private Function Norm(ByVal s As String) As String
     If Len(s) = 0 Then Norm = "": Exit Function
     s = Replace$(s, ChrW(&HFEFF), "") ' UTF-8 BOM
-    s = Trim$(s)
-    Norm = s
+    Norm = Trim$(s)
 End Function
 
 Public Function FindColumnIndex(arr As Variant, ColName As String) As Long
-    Dim c As Long, target As String
+    Dim rHead As Long, c As Long, cLB As Long, cUB As Long, target As String
+    On Error GoTo FAIL
+    rHead = LBound(arr, 1)                   ' ★ヘッダー行の下限を取得（0/1いずれでもOK）
+    cLB = LBound(arr, 2): cUB = UBound(arr, 2)
+
     target = Norm(ColName)
-    For c = 1 To UBound(arr, 2)
-        If Norm(CStr(arr(1, c))) = target Then
+    For c = cLB To cUB
+        If Norm(CStr(arr(rHead, c))) = target Then
             FindColumnIndex = c
             Exit Function
         End If
     Next
     FindColumnIndex = 0
+    Exit Function
+FAIL:
+    FindColumnIndex = 0
 End Function
 
 
-'==============================
-' ベーステーブル選定（キー定義が成立している最初のテーブル。無ければ先頭）
-'  - tblNames : H列以降のテーブル名配列 Map_TblNames()
-'  - srcCols  : マッピングの元カラム   Map_SrcCols(行=出力列, 列=テーブル)
-'  - isKey    : キー列フラグ配列       Map_IsKey()
-' 返り値      : ベーステーブル名（空配列時は ""）
-'==============================
-Public Function PickBaseTableName(tblNames() As String, srcCols As Variant, isKey() As Boolean) As String
-    Dim t As Long, i As Long
-    ' テーブル名が未設定なら空を返す
-    If (Not Not tblNames) = 0 Then
-        PickBaseTableName = ""
-        Exit Function
-    End If
-    
-    ' どれか1つでも「キー=○」かつ該当テーブルに元カラムが指定されている最初のテーブルを採用
-    For t = LBound(tblNames) To UBound(tblNames)
-        For i = LBound(isKey) To UBound(isKey)
-            If isKey(i) Then
-                ' srcCols(行=i, 列=t) が範囲内か確認
-                If (Not IsEmpty(srcCols)) Then
-                    On Error Resume Next
-                    Dim hasCol As Boolean
-                    hasCol = (Len(Trim$(CStr(srcCols(i, t)))) > 0)
-                    On Error GoTo 0
-                    If hasCol Then
-                        PickBaseTableName = tblNames(t)
-                        Exit Function
-                    End If
-                End If
-            End If
-        Next i
-    Next t
-    
-    ' 上で見つからなければ、先頭を採用
-    PickBaseTableName = tblNames(LBound(tblNames))
-End Function
+⸻
+
+これで直る理由（要点）
+	•	Map_IsKey を毎回 ReDim + 設定するので、未割り当てや前回サイズの残骸で落ちません。
+	•	配列の LBound/UBound を常に使用するため、0 始まりの配列でも安全に参照できます。
+	•	データ行の開始も rLB1 + 1 に統一し、ヘッダー行位置が 0/1 どちらでも正しくスキップします。
+
+⸻
+
+もしまだ落ちる場合は、ログに
+	•	BuildKeyIndexes: table index out of srcCols bound...
+	•	key column not found...
+などが出るはずなので、そのテーブルの ヘッダー名の全角半角/BOM混入、Mapping 側の 「キー=○」だが該当テーブルの元カラム名が空、といったデータ起因を重点的に確認してみてください。
