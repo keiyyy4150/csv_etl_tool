@@ -1,2 +1,118 @@
-原因調査中ですが、modMappingHelperのBuildKeyIndexesの3) このテーブルで使うキー列ヘッダーの位置を集める　付近でインデックスエラーが起きているようです。
-原因わかりますか？
+ありがとうございます、状況把握できました。
+
+結論から言うと、インデックスエラーの原因は高確率でここです：
+	•	BuildKeyIndexes 内の「3) このテーブルで使うキー列ヘッダーの位置を集める」で
+For i = LBound(Map_IsKey) To UBound(Map_IsKey) を回す前提になっているが、
+Map_IsKey が未初期化だったり、Map_SrcCols の第2次元の下限が 1、Map_TblNames は 0 始まりなど、配列の下限ズレがあると Subscript out of range が発生します。該当ブロックはここです（現行）： ￼
+
+また、Map_IsKey/Map_SrcCols の宣言は modGlobals にあります（ここで配列として宣言されるだけ）ので、読み取り（ReadMappingFromTableName）に失敗したり、Mappingに行が無いと配列が未割り当てになり得ます。宣言箇所： ￼
+ReadMappingFromTableName は列定義を 1..lastRow で確保し、第2次元 0..tCount-1 の Map_SrcCols を設定する仕様に直しています（G列からテーブル名）ので、ここが走らない/途中で失敗しても同様の症状になります。読み取りロジック： ￼、 ￼
+
+⸻
+
+対処（堅牢化パッチ）
+
+BuildKeyIndexes の「キー列集計」部分を下限ズレと未初期化をガードする形に差し替えてください。modMappingHelper 内の BuildKeyIndexes の「3)」以降を以下に置き換えで OK です（サブルーチン全体の張替えでも可）。
+
+'=== 3) このテーブルで使うキー列ヘッダーの位置を集める（堅牢化） ===
+Dim keyColIdx() As Long, kc As Long: kc = 0
+
+Dim hasIsKey As Boolean, hasSrc As Boolean
+Dim lbIs As Long, ubIs As Long, lb2 As Long, ub2 As Long, tAdj As Long
+
+On Error Resume Next
+lbIs = LBound(Map_IsKey): ubIs = UBound(Map_IsKey)
+hasIsKey = (Err.Number = 0)
+Err.Clear
+
+lb2 = LBound(Map_SrcCols, 2): ub2 = UBound(Map_SrcCols, 2)
+hasSrc = (Err.Number = 0)
+Err.Clear
+On Error GoTo 0
+
+If Not hasIsKey Or Not hasSrc Then
+    WriteLog "WARN", "BuildKeyIndexes: Map_IsKey or Map_SrcCols not initialized. table=" & tblName
+    GoTo CONT_T
+End If
+
+' Map_TblNames が 0 始まり、Map_SrcCols の第2次元が 1 始まりのケースを吸収
+If lb2 = 1 And LBound(Map_TblNames) = 0 Then
+    tAdj = t + 1
+Else
+    tAdj = t
+End If
+
+If tAdj < lb2 Or tAdj > ub2 Then
+    WriteLog "WARN", "BuildKeyIndexes: table index out of srcCols bound. table=" & tblName & " tAdj=" & tAdj
+    GoTo CONT_T
+End If
+
+Dim i As Long
+For i = lbIs To ubIs
+    If Map_IsKey(i) Then
+        Dim srcCol As String
+        On Error Resume Next
+        srcCol = Trim$(CStr(Map_SrcCols(i, tAdj)))
+        If Err.Number <> 0 Then srcCol = ""
+        Err.Clear
+        On Error GoTo 0
+
+        If Len(srcCol) > 0 Then
+            Dim idx As Long: idx = FindColumnIndex(arr, srcCol)
+            If idx > 0 Then
+                kc = kc + 1
+                ReDim Preserve keyColIdx(1 To kc)
+                keyColIdx(kc) = idx
+            Else
+                WriteLog "WARN", "BuildKeyIndexes: key column not found. table=" & tblName & " col=" & srcCol
+            End If
+        End If
+    End If
+Next i
+
+'=== 4) 実際にキーを作る（既存のまま） ===
+Dim dict1 As Object, dictM As Object
+Set dict1 = CreateObject("Scripting.Dictionary") ' 単一行（最初の1件）
+Set dictM = CreateObject("Scripting.Dictionary") ' 複数行（全件、Collection）
+
+If kc > 0 Then
+    Dim r As Long, keyStr As String
+    For r = 2 To rUB1
+        keyStr = BuildKeyFromRow(arr, r, keyColIdx)
+        If Len(keyStr) > 0 Then
+            If Not dict1.Exists(keyStr) Then dict1.Add keyStr, r
+            If Not dictM.Exists(keyStr) Then dictM.Add keyStr, New Collection
+            dictM(keyStr).Add r
+        End If
+    Next
+Else
+    WriteLog "WARN", "BuildKeyIndexes: no key columns collected for table=" & tblName
+End If
+
+Set KeyIndexSingle(tblName) = dict1
+Set KeyIndexMulti(tblName) = dictM
+
+	•	現行の「3)」ブロックは、Map_IsKey/Map_SrcCols が未初期化でも LBound/UBound に触れるため落ちます（現行実装： ￼）。このパッチは配列境界に触れる前に初期化/範囲をチェックして回避します。
+	•	さらに tAdj を導入し、Map_TblNames が 0 始まり・Map_SrcCols が 1 始まりの組合せでも正しく参照します（SafeGetSrcColName と同じ考え方： ￼）。
+
+⸻
+
+追加の確認ポイント（再発防止）
+	1.	Mapping の列レイアウト
+
+	•	A:No / B:出力カラム / C:型 / D:キー(○) / E:モード / F:定義 / G列以降がテーブル名ヘッダ
+この前提で ReadMappingFromTableName が Map_IsKey と Map_SrcCols を確保します。 ￼、 ￼
+
+	2.	行がゼロの Mapping を避ける
+
+	•	Mapping の行が 0 の場合は読み取り側でエラー扱いにしているので、少なくとも1行は用意してください。 ￼
+
+	3.	「キー=○」の行に、該当テーブルの元カラム名を必ず記入
+
+	•	これが空だとキー列収集数が 0 になり JOIN 索引は作れません（警告ログは出ます）。ベース選定側も、キー=○ かつ元カラムありの最初のテーブルをベースにします。 ￼
+
+⸻
+
+もしこのパッチでも同じ箇所で落ちる場合は、最初に ReadMappingFromTableName が成功しているかと、Mapping シートの G 列以降にテーブル名ヘッダが正しく存在するか（空や結合セルではないか）をご確認ください。
+
+困っているワークブックをそのまま使う前提であれば、上記パッチ＋ログでどこが未初期化/ズレているかがはっきり出るはずです。
