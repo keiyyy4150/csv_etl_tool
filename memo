@@ -1,157 +1,3 @@
-了解です。
-エラー原因は、前回案で FindHeaderIndex を Private にしていたため、modMappingHelper から参照できず「定義エラー（コンパイル）」になったものです。
-またご希望どおり Mapping 側の「定義」列は廃止し、必ず Definitions シート（定義ID）を参照する運用に統一しました。
-
-以下の2モジュールを差し替えてください。他のモジュールは変更不要です。
-
-⸻
-
-追加／差し替え1：modDefinitions（新規 or 全置換）
-
-Option Explicit
-
-'=========================================================
-' Definitionsシートから「定義ID」に対応するロジック群を連結して返す
-' シート要件（ListObject名："Definitions" 推奨）：
-'   見出し： 定義ID / バージョン(任意) / 行No / ロジック / （備考 任意）
-'   - 同じ定義IDの中で、最大のバージョン番号を採用（バージョン列がなければ全行対象）
-'   - 行No昇順で「ロジック」を vbLf 連結して返却
-'=========================================================
-
-Public Function BuildDefinitionFromSheet(defId As String, Optional definitionsListName As String = "Definitions") As String
-    Dim lo As ListObject
-    Set lo = GetListObjectByNameEx(definitionsListName)
-    If lo Is Nothing Then Err.Raise vbObjectError + 3401, , "Definitionsテーブル(" & definitionsListName & ")が見つかりません。"
-    If lo.DataBodyRange Is Nothing Then BuildDefinitionFromSheet = "": Exit Function
-
-    ' ヘッダー列位置
-    Dim cId As Long, cVer As Long, cLine As Long, cLogic As Long
-    cId    = FindHeaderIndexEx(lo, "定義ID")
-    cVer   = FindHeaderIndexEx(lo, "バージョン")  ' 任意
-    cLine  = FindHeaderIndexEx(lo, "行No")
-    cLogic = FindHeaderIndexEx(lo, "ロジック")
-    If cId = 0 Or cLine = 0 Or cLogic = 0 Then
-        Err.Raise vbObjectError + 3402, , "Definitionsの見出しは『定義ID／行No／ロジック（＋任意でバージョン）』が必要です。"
-    End If
-
-    ' 最大バージョン
-    Dim maxVer As Long
-    maxVer = MaxVersionForIdEx(lo, cId, cVer, defId)
-
-    ' 行No→ロジック の一時格納
-    Dim dict As Object: Set dict = CreateObject("Scripting.Dictionary")
-
-    Dim r As Range, idv As String, vv As Variant, lineNo As Long, logicText As String
-    For Each r In lo.DataBodyRange.Rows
-        idv = CStr(r.Cells(1, cId).Value)
-        If StrComp(idv, defId, vbTextCompare) = 0 Then
-            If cVer > 0 Then
-                vv = r.Cells(1, cVer).Value
-                If IsNumeric(vv) Then
-                    If CLng(vv) <> maxVer Then GoTo CONT_ROW
-                Else
-                    GoTo CONT_ROW
-                End If
-            End If
-
-            vv = r.Cells(1, cLine).Value
-            If Not IsNumeric(vv) Then GoTo CONT_ROW
-            lineNo = CLng(vv)
-
-            logicText = CStr(r.Cells(1, cLogic).Value)
-            If Len(Trim$(logicText)) = 0 Then GoTo CONT_ROW
-
-            dict(lineNo) = logicText   ' 同じ行Noが重複していたら後勝ち
-        End If
-CONT_ROW:
-    Next
-
-    If dict.Count = 0 Then BuildDefinitionFromSheet = "": Exit Function
-
-    ' 昇順でJoin
-    Dim keys() As Variant, i As Long, j As Long, tmp As Variant, acc As String
-    keys = dict.Keys
-    For i = LBound(keys) To UBound(keys) - 1
-        For j = i + 1 To UBound(keys)
-            If CLng(keys(i)) > CLng(keys(j)) Then
-                tmp = keys(i): keys(i) = keys(j): keys(j) = tmp
-            End If
-        Next
-    Next
-
-    acc = ""
-    For i = LBound(keys) To UBound(keys)
-        If Len(acc) = 0 Then
-            acc = dict(keys(i))
-        Else
-            acc = acc & vbLf & dict(keys(i))
-        End If
-    Next
-
-    BuildDefinitionFromSheet = acc
-End Function
-
-'==================== ユーティリティ（このモジュール内限定名） ====================
-
-Private Function GetListObjectByNameEx(nameOrRange As String) As ListObject
-    Dim ws As Worksheet, lo As ListObject
-    For Each ws In ThisWorkbook.Worksheets
-        For Each lo In ws.ListObjects
-            If StrComp(lo.Name, nameOrRange, vbTextCompare) = 0 Then
-                Set GetListObjectByNameEx = lo
-                Exit Function
-            End If
-        Next
-    Next
-    Set GetListObjectByNameEx = Nothing
-End Function
-
-Private Function FindHeaderIndexEx(lo As ListObject, headerName As String) As Long
-    Dim i As Long, s As String
-    For i = 1 To lo.HeaderRowRange.Columns.Count
-        s = Trim$(CStr(lo.HeaderRowRange.Cells(1, i).Value))
-        If StrComp(s, headerName, vbTextCompare) = 0 Then
-            FindHeaderIndexEx = i
-            Exit Function
-        End If
-    Next
-    FindHeaderIndexEx = 0
-End Function
-
-Private Function MaxVersionForIdEx(lo As ListObject, idxId As Long, idxVer As Long, defId As String) As Long
-    Dim maxv As Long: maxv = 1
-    Dim r As Range, v As Variant, idv As String, vv As Variant
-    If lo.DataBodyRange Is Nothing Then MaxVersionForIdEx = 1: Exit Function
-
-    For Each r In lo.DataBodyRange.Rows
-        v = r.Cells(1, idxId).Value
-        idv = CStr(v)
-        If StrComp(idv, defId, vbTextCompare) = 0 Then
-            If idxVer > 0 Then
-                vv = r.Cells(1, idxVer).Value
-                If IsNumeric(vv) Then
-                    If CLng(vv) > maxv Then maxv = CLng(vv)
-                End If
-            End If
-        End If
-    Next
-    MaxVersionForIdEx = maxv
-End Function
-
-
-⸻
-
-差し替え2：modMappingHelper の ReadMappingFromTableName（「定義列廃止・定義ID必須」版・全文）
-
-Option Explicit
-
-' Mappingテーブルを読み込み、Definitionsシートの定義IDから「定義」を復元する
-' ・「定義」列は廃止（使わない）
-' ・「定義ID」列は必須（空ならエラー）
-' ・G列以降などの固定概念に依存せず、ヘッダー走査で元テーブル名の開始位置を自動検出
-' 既存の公開配列（Map_*）はそのまま使用する前提：
-'   Map_No(), Map_OutCols(), Map_DataType(), Map_Key(), Map_Mode(), Map_Def(), Map_TblNames(), Map_SrcCols(,)
-'
 Public Function ReadMappingFromTableName(mapTableName As String) As Boolean
     On Error GoTo FAIL
 
@@ -170,21 +16,20 @@ Public Function ReadMappingFromTableName(mapTableName As String) As Boolean
     Dim cNo As Long, cOut As Long, cType As Long, cKey As Long, cMode As Long
     Dim cDefId As Long
 
-    cNo    = FindHeaderIndexLocal(lo, "No")                 ' 任意（存在すれば読む）
+    cNo    = FindHeaderIndexLocal(lo, "No")                         ' 任意（存在すれば読む）
     cOut   = FindHeaderIndexLocal(lo, "出力カラム")
     If cOut = 0 Then cOut = FindHeaderIndexLocal(lo, "出力カラム名") ' 互換
     cType  = FindHeaderIndexLocal(lo, "データ型")
     cKey   = FindHeaderIndexLocal(lo, "キー")
     cMode  = FindHeaderIndexLocal(lo, "モード")
-    cDefId = FindHeaderIndexLocal(lo, "定義ID")            ' ★必須
+    cDefId = FindHeaderIndexLocal(lo, "定義ID")                     ' 必須（ただしVALUE行は空OK）
 
     If cOut = 0 Or cType = 0 Or cKey = 0 Or cMode = 0 Or cDefId = 0 Then
         MsgBox "Mappingの見出しに不足があります（出力カラム／データ型／キー／モード／定義ID）", vbCritical
         ReadMappingFromTableName = False: Exit Function
     End If
 
-    '--- 元テーブル名の開始位置を決定 ---
-    ' 固定列の最大インデックスの右隣を「元テーブル開始」とみなす
+    '--- 元テーブル名の開始位置を決定（固定列の最大の右隣） ---
     Dim maxFixed As Long
     maxFixed = Application.WorksheetFunction.Max(ArrayNZ(cNo), cOut, cType, cKey, cMode, cDefId)
     If maxFixed < 1 Then maxFixed = 6
@@ -224,7 +69,7 @@ Public Function ReadMappingFromTableName(mapTableName As String) As Boolean
 
     '--- 本体読み込み ---
     Dim body As Range: Set body = lo.DataBodyRange
-    Dim defId As String, defText As String
+    Dim defId As String, defText As String, modeVal As String
 
     For r = 1 To rows
         If cNo > 0 Then Map_No(r) = body.Cells(r, cNo).Value
@@ -233,15 +78,22 @@ Public Function ReadMappingFromTableName(mapTableName As String) As Boolean
         Map_Key(r)      = UCase$(Trim$(CStr(body.Cells(r, cKey).Value)))
         Map_Mode(r)     = UCase$(Trim$(CStr(body.Cells(r, cMode).Value)))
 
+        modeVal = Map_Mode(r)
         defId = Trim$(CStr(body.Cells(r, cDefId).Value))
-        If Len(defId) = 0 Then
-            MsgBox "定義IDが未入力の行があります（No=" & CStr(IIf(cNo > 0, body.Cells(r, cNo).Value, r)) & "）", vbCritical
-            ReadMappingFromTableName = False: Exit Function
-        End If
 
-        On Error GoTo DEF_ERR
-        defText = BuildDefinitionFromSheet(defId)   ' Definitionsから復元
-        On Error GoTo FAIL
+        If Len(defId) = 0 Then
+            If modeVal = "VALUE" Then
+                defText = ""   ' VALUEは加工なし（Definitions参照不要）
+            Else
+                MsgBox "定義IDが未入力ですが、モード=" & modeVal & " の行があります。" & vbCrLf & _
+                       "No=" & CStr(IIf(cNo > 0, body.Cells(r, cNo).Value, r)), vbCritical
+                ReadMappingFromTableName = False: Exit Function
+            End If
+        Else
+            On Error GoTo DEF_ERR
+            defText = BuildDefinitionFromSheet(defId)   ' Definitionsから復元
+            On Error GoTo FAIL
+        End If
 
         Map_Def(r) = defText
 
@@ -263,56 +115,3 @@ FAIL:
     MsgBox "ReadMappingFromTableName でエラー: " & Err.Description, vbCritical
     ReadMappingFromTableName = False
 End Function
-
-'==================== ローカルユーティリティ ====================
-
-Private Function GetListObjectByNameLocal(nameOrRange As String) As ListObject
-    Dim ws As Worksheet, lo As ListObject
-    For Each ws In ThisWorkbook.Worksheets
-        For Each lo In ws.ListObjects
-            If StrComp(lo.Name, nameOrRange, vbTextCompare) = 0 Then
-                Set GetListObjectByNameLocal = lo
-                Exit Function
-            End If
-        Next
-    Next
-    Set GetListObjectByNameLocal = Nothing
-End Function
-
-Private Function FindHeaderIndexLocal(lo As ListObject, headerName As String) As Long
-    Dim i As Long, s As String
-    For i = 1 To lo.HeaderRowRange.Columns.Count
-        s = Trim$(CStr(lo.HeaderRowRange.Cells(1, i).Value))
-        If StrComp(s, headerName, vbTextCompare) = 0 Then
-            FindHeaderIndexLocal = i
-            Exit Function
-        End If
-    Next
-    FindHeaderIndexLocal = 0
-End Function
-
-' WorksheetFunction.Max は配列の空(=0)が混じると不便なので0→無視の代替
-Private Function ArrayNZ(v As Variant) As Long
-    If IsNumeric(v) Then
-        ArrayNZ = CLng(v)
-    Else
-        ArrayNZ = 0
-    End If
-End Function
-
-
-⸻
-
-セットアップ（最終確認）
-	•	Mapping_Main / Mapping_List
-	•	見出し例：No / 出力カラム / データ型 / キー / モード / 定義ID / （以降：受入テーブルA / 受入テーブルB ...）
-	•	「定義」列は置かない（使いません）。
-	•	すべての行で 定義ID を必須入力。
-	•	Definitions（ListObject名：Definitions 推奨）
-	•	見出し：定義ID / バージョン(任意) / 行No / ロジック / （備考 任意）
-	•	同じ定義IDの行を、最大バージョン・行No昇順で vbLf 連結 → 評価。
-	•	1セル＝1ロジック（IFを行分割でOK：複数行の結果は連結されます）。
-	•	既存処理（JOIN/評価/出力）はそのまま有効。
-	•	Map_Def() に Definitions から復元した長文が入るため、従来の評価パイプラインに自然に馴染みます。
-
-これで「FindHeaderIndex の定義エラー」も解消され、かつ「定義列廃止・定義ID必須」の一元運用に切り替わります。もし Definitions の ListObject 名やヘッダー名が異なる場合は、BuildDefinitionFromSheet の引数 definitionsListName で指定するか、ヘッダー名を該当のものに変更してください。
