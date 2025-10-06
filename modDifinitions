@@ -1,0 +1,129 @@
+Option Explicit
+
+'=========================================================
+' Definitionsシートから「定義ID」に対応するロジック群を連結して返す
+' シート要件（ListObject名："Definitions" 推奨）：
+'   見出し： 定義ID / バージョン(任意) / 行No / ロジック / （備考 任意）
+'   - 同じ定義IDの中で、最大のバージョン番号を採用（バージョン列がなければ全行対象）
+'   - 行No昇順で「ロジック」を vbLf 連結して返却
+'=========================================================
+
+Public Function BuildDefinitionFromSheet(defId As String, Optional definitionsListName As String = "Definitions") As String
+    Dim lo As ListObject
+    Set lo = GetListObjectByNameEx(definitionsListName)
+    If lo Is Nothing Then Err.Raise vbObjectError + 3401, , "Definitionsテーブル(" & definitionsListName & ")が見つかりません。"
+    If lo.DataBodyRange Is Nothing Then BuildDefinitionFromSheet = "": Exit Function
+
+    ' ヘッダー列位置
+    Dim cId As Long, cVer As Long, cLine As Long, cLogic As Long
+    cId = FindHeaderIndexEx(lo, "定義ID")
+    cVer = FindHeaderIndexEx(lo, "バージョン")    ' 任意
+    cLine = FindHeaderIndexEx(lo, "行No")
+    cLogic = FindHeaderIndexEx(lo, "ロジック")
+    If cId = 0 Or cLine = 0 Or cLogic = 0 Then
+        Err.Raise vbObjectError + 3402, , "Definitionsの見出しは『定義ID／行No／ロジック（＋任意でバージョン）』が必要です。"
+    End If
+
+    ' 最大バージョン
+    Dim maxVer As Long
+    maxVer = MaxVersionForIdEx(lo, cId, cVer, defId)
+
+    ' 行No→ロジック の一時格納
+    Dim dict As Object: Set dict = CreateObject("Scripting.Dictionary")
+
+    Dim r As Range, idv As String, vv As Variant, lineNo As Long, logicText As String
+    For Each r In lo.DataBodyRange.rows
+        idv = CStr(r.Cells(1, cId).Value)
+        If StrComp(idv, defId, vbTextCompare) = 0 Then
+            If cVer > 0 Then
+                vv = r.Cells(1, cVer).Value
+                If IsNumeric(vv) Then
+                    If CLng(vv) <> maxVer Then GoTo CONT_ROW
+                Else
+                    GoTo CONT_ROW
+                End If
+            End If
+
+            vv = r.Cells(1, cLine).Value
+            If Not IsNumeric(vv) Then GoTo CONT_ROW
+            lineNo = CLng(vv)
+
+            logicText = CStr(r.Cells(1, cLogic).Value)
+            If Len(Trim$(logicText)) = 0 Then GoTo CONT_ROW
+
+            dict(lineNo) = logicText   ' 同じ行Noが重複していたら後勝ち
+        End If
+CONT_ROW:
+    Next
+
+    If dict.Count = 0 Then BuildDefinitionFromSheet = "": Exit Function
+
+    ' 昇順でJoin
+    Dim keys() As Variant, i As Long, j As Long, tmp As Variant, acc As String
+    keys = dict.keys
+    For i = LBound(keys) To UBound(keys) - 1
+        For j = i + 1 To UBound(keys)
+            If CLng(keys(i)) > CLng(keys(j)) Then
+                tmp = keys(i): keys(i) = keys(j): keys(j) = tmp
+            End If
+        Next
+    Next
+
+    acc = ""
+    For i = LBound(keys) To UBound(keys)
+        If Len(acc) = 0 Then
+            acc = dict(keys(i))
+        Else
+            acc = acc & vbLf & dict(keys(i))
+        End If
+    Next
+
+    BuildDefinitionFromSheet = acc
+End Function
+
+'==================== ユーティリティ（このモジュール内限定名） ====================
+
+Private Function GetListObjectByNameEx(nameOrRange As String) As ListObject
+    Dim ws As Worksheet, lo As ListObject
+    For Each ws In ThisWorkbook.Worksheets
+        For Each lo In ws.ListObjects
+            If StrComp(lo.name, nameOrRange, vbTextCompare) = 0 Then
+                Set GetListObjectByNameEx = lo
+                Exit Function
+            End If
+        Next
+    Next
+    Set GetListObjectByNameEx = Nothing
+End Function
+
+Private Function FindHeaderIndexEx(lo As ListObject, headerName As String) As Long
+    Dim i As Long, s As String
+    For i = 1 To lo.HeaderRowRange.Columns.Count
+        s = Trim$(CStr(lo.HeaderRowRange.Cells(1, i).Value))
+        If StrComp(s, headerName, vbTextCompare) = 0 Then
+            FindHeaderIndexEx = i
+            Exit Function
+        End If
+    Next
+    FindHeaderIndexEx = 0
+End Function
+
+Private Function MaxVersionForIdEx(lo As ListObject, idxId As Long, idxVer As Long, defId As String) As Long
+    Dim maxv As Long: maxv = 1
+    Dim r As Range, v As Variant, idv As String, vv As Variant
+    If lo.DataBodyRange Is Nothing Then MaxVersionForIdEx = 1: Exit Function
+
+    For Each r In lo.DataBodyRange.rows
+        v = r.Cells(1, idxId).Value
+        idv = CStr(v)
+        If StrComp(idv, defId, vbTextCompare) = 0 Then
+            If idxVer > 0 Then
+                vv = r.Cells(1, idxVer).Value
+                If IsNumeric(vv) Then
+                    If CLng(vv) > maxv Then maxv = CLng(vv)
+                End If
+            End If
+        End If
+    Next
+    MaxVersionForIdEx = maxv
+End Function
