@@ -1,4 +1,143 @@
-IF(AND(
-    LEFT({pcm_t_景表法遵法チェック結果_総付景品.総付景品2_2},1)="A",
-    RIGHT({pcm_t_景表法遵法チェック結果_総付景品.総付景品2_2},1)="1"
-), "A-1", "")
+了解。「クリア時はヘッダーのみ」運用に最適化した最小改良パッチです。
+そのまま標準モジュールに貼って使えます（既存の ClearData / PasteToMasterByTable を置き換え）。
+
+⸻
+
+1) テーブル操作ユーティリティ（新規 or 追記）
+
+'=== modTableUtils.bas ===
+Option Explicit
+
+' ヘッダーのみ（0行）に縮める：最速クリア
+Public Sub ShrinkToHeaderOnly(lo As ListObject)
+    If lo Is Nothing Then Exit Sub
+    lo.Resize lo.HeaderRowRange            ' データ行を持たないサイズに一発リサイズ
+End Sub
+
+' AutoFilterがかかってるときだけ解除（無駄なShowAllData回避）
+Public Sub ClearFilterIfNeeded(lo As ListObject)
+    On Error Resume Next
+    If Not lo.AutoFilter Is Nothing Then
+        If lo.AutoFilter.FilterMode Then lo.AutoFilter.ShowAllData
+    End If
+    On Error GoTo 0
+End Sub
+
+' 必要サイズに一発リサイズ（ヘッダー+rows行, cols列）
+Public Sub ResizeForPaste(lo As ListObject, rows As Long, cols As Long)
+    Dim hdr As Range: Set hdr = lo.HeaderRowRange
+    lo.Resize hdr.Resize(rows + 1, cols)
+End Sub
+
+
+⸻
+
+2) クリア処理（置き換え）
+
+'=== ClearData（高速クリア：ヘッダーのみ）===
+Public Sub ClearData()
+    Dim prevCalc As XlCalculation
+    Dim prevUpd As Boolean, prevEvt As Boolean, prevDisp As Boolean, prevPB As Boolean
+    Dim t0 As Double: t0 = Timer
+
+    If Len(CurrentMasterTableName) = 0 Then UsePipelineMain ' 既定Main/Listのどちらかに
+
+    ' 画面/計算系OFF
+    On Error Resume Next
+    prevUpd = Application.ScreenUpdating
+    prevEvt = Application.EnableEvents
+    prevDisp = Application.DisplayAlerts
+    prevCalc = Application.Calculation
+    Application.ScreenUpdating = False
+    Application.EnableEvents = False
+    Application.DisplayAlerts = False
+    Application.Calculation = xlCalculationManual
+    On Error GoTo 0
+
+    On Error GoTo EH
+    Dim lo As ListObject
+    Set lo = GetListObjectByName(CurrentMasterTableName)
+    If Not lo Is Nothing Then
+        ' ページ分割線の再計算を抑止（地味に効く）
+        prevPB = lo.Parent.DisplayPageBreaks
+        lo.Parent.DisplayPageBreaks = False
+
+        ' フィルタがかかっている時だけ解除
+        ClearFilterIfNeeded lo
+
+        ' ★最重要：ヘッダーのみ（0行）に縮める
+        ShrinkToHeaderOnly lo
+
+        ' 必要なら「1行だけ用意」する場合は以下をON（UI都合）：
+        ' ResizeForPaste lo, 1, lo.HeaderRowRange.Columns.Count
+
+        lo.Parent.DisplayPageBreaks = prevPB
+    End If
+
+    ' 中間データの解放（あなたの既存ロジックに合わせて）
+    HasRaw = False
+    IsProcessed = False
+    On Error Resume Next
+    If (Not Not RawJoined) <> 0 Then Erase RawJoined
+    If (Not Not m_baseRowIdx) <> 0 Then Erase m_baseRowIdx
+    On Error GoTo 0
+    m_baseTblName = ""
+    Set TableData = Nothing
+    Set KeyIndexSingle = Nothing
+    Set KeyIndexMulti = Nothing
+
+DONE:
+    ' 元に戻す
+    On Error Resume Next
+    Application.ScreenUpdating = prevUpd
+    Application.EnableEvents = prevEvt
+    Application.DisplayAlerts = prevDisp
+    Application.Calculation = prevCalc
+    On Error GoTo 0
+
+    MsgBox "初期化しました。（" & Format(Timer - t0, "0.00") & "s）", vbInformation
+    Exit Sub
+
+EH:
+    On Error Resume Next
+    Application.ScreenUpdating = prevUpd
+    Application.EnableEvents = prevEvt
+    Application.DisplayAlerts = prevDisp
+    Application.Calculation = prevCalc
+    On Error GoTo 0
+    MsgBox "ClearDataでエラー: " & Err.Description, vbCritical
+End Sub
+
+
+⸻
+
+3) 貼り付け処理（置き換え）
+
+'=== 貼り付け：必要サイズへ一発Resize→Value代入 ===
+Public Sub PasteToMasterByTable(masterTbl As ListObject, dataArr As Variant)
+    Dim rows As Long, cols As Long
+    rows = UBound(dataArr, 1)
+    cols = UBound(dataArr, 2)
+
+    ' 列数が違ってもここで正規化（Masterを合わせる）
+    If masterTbl.ListColumns.Count <> cols Then
+        ResizeForPaste masterTbl, 0, cols   ' まず列だけ合わせる（0行）
+    End If
+
+    ' 最終サイズへ一発リサイズ（行も一緒に）
+    ResizeForPaste masterTbl, rows, cols
+
+    ' 値を流し込む（DataBodyRange は必ず存在する状態）
+    masterTbl.DataBodyRange.Value = dataArr
+End Sub
+
+これで「クリア時は0行」「貼付時に必要サイズへ一発Resize」という最短ルートになります。
+DataBodyRange.ClearContents を使わないため、行数が多いシートでも劇的に軽くなります。
+
+⸻
+
+運用メモ
+	•	たまに「見た目で空行を残したい」場合は、ClearData のコメントアウトしてある 1 行リサイズを有効にしてください。
+	•	条件付き書式や検証が重い場合は、テーブルスタイルを軽いものにするのも効果的です（例：lo.TableStyle = "TableStyleLight1"）。
+
+必要なら、既存モジュール名に合わせてサブルーチン名だけ調整します。
