@@ -1,1 +1,83 @@
-Masterテーブルの列数がMappingの出力列数と一致しません
+原因はほぼ「Master の列数」と「dataArr（＝JOIN済み配列）の列数」の不一致です。実際にそのメッセージは PasteToMasterByTable 内で、masterTbl.ListColumns.Count と UBound(dataArr, 2) を比べて違えば出すように書かれています。Import/Process の最後で PasteToMasterByTable masterLo, RawJoined を呼んでいるので、ここで引っかかっています。  ￼
+
+よくある実原因（優先度順）
+	1.	Mappingテーブルに“空の行”が含まれている
+ReadMappingFromTableName は テーブルのデータ行数そのもの（lo.DataBodyRange.Rows.Count）で Map_OutCols などの配列を再確保します。つまり、「出力カラム」が空でも、その行は「1列分」としてカウントされます。結果として、JOIN済み配列の列数＝Mapping の行数になり、Master の見た目の列数（＝出力カラムが実際に設定されている数）とズレてエラーになります。
+該当箇所：rows = lo.DataBodyRange.Rows.Count → ReDim Map_OutCols(1 To rows) …（出力カラムが空でも行はカウント）  ￼
+
+Excelの「テーブル」は、何も入っていない“空白行”でもテーブルの「行」として数えます。列見出しだけ数えた“目視のカラム数”と、コードが使う“Mapping の行数”がズレやすいポイントです。
+
+	2.	Main/List のパイプライン取り違え
+起動直後などに UsePipelineMain が既定で効きます（CurrentMappingTableName = "Mapping_Main", CurrentMasterTableName = "Master_Main"）。List 側のMappingを編集しているのに Main が選ばれていると、Mapping の列数と Master の列数が別シートのものになり不一致が起きます。切替は SetPipeline_Main / _List ボタン（または UsePipeline… 呼び）で行います。  ￼
+	3.	Master 側の列が過去バージョンのまま
+コードは Master の列数を 自動で Mapping に合わせて増減しません（ResetMasterSize は行数だけ調整）。以前のMappingで作った列構成が残っていると、今のMapping行数とズレます。  ￼
+	4.	同名列・自動リネームの影響は“数”には無関係
+Excelが「列名(2)」のように自動改名しても、列“数”自体は増えないので今回のエラー原因には直結しません（名前の不一致は別フェーズの不具合要因にはなりえますが、今回は列数チェックで落ちています）。
+
+⸻
+
+まず確認してほしいチェックリスト
+	•	Mapping（使っている方：Mapping_Main か Mapping_List）の**テーブルの「データ行」**に、
+	•	「出力カラム」が空の行
+	•	すべて空白の行
+が混じっていないか（テーブルの“行”自体を削除してください。クリアでは×）。  ￼
+	•	いま Main / List のどちらのパイプラインで動かしているか（ボタンで切替）。  ￼
+	•	Master_* シート側のテーブル列数が、現在の Mapping の“有効行数（= 出力カラムが入っている行の数）”と一致しているか。
+（合わないときは Master のテーブル設計列を増減して合わせる）
+
+⸻
+
+再発防止用の安全対策（コード最小修正案）
+
+A. 「出力カラムが空の行」を 読み飛ばす（推奨）
+
+ReadMappingFromTableName 内で、配列を確保する前に「有効行」を抽出し、その件数だけで ReDim してください。イメージ：
+
+' rows = lo.DataBodyRange.Rows.Count はやめる
+Dim body As Range: Set body = lo.DataBodyRange
+Dim r As Long, effective As Collection: Set effective = New Collection
+For r = 1 To body.Rows.Count
+    If Trim$(CStr(body.Cells(r, cOut).Value)) <> "" Then
+        effective.Add r
+    End If
+Next
+
+Dim rows As Long: rows = effective.Count
+ReDim Map_OutCols(1 To rows)
+' …同様に Map_DataType / Map_Key / Map_Mode / Map_Def / Map_SrcCols(, ) を rows ベースで確保
+' 読み込み時も effective(i) をインデックスに使って1行ずつ詰めて格納
+
+こうしておけば、Mappingテーブル末尾の空行や“出力カラムが空の行”を数えなくなるため、dataArr の列数と Master の列数が合いやすくなります。  ￼
+
+B. PasteToMasterByTable で列数が違ったら Master を合わせる（応急）
+
+厳密チェックの代わりに、Master を cols 列へリサイズしてから貼り付ける方法です（ヘッダー名の付与は別途必要）。
+
+Public Sub PasteToMasterByTable(masterTbl As ListObject, dataArr As Variant)
+    Dim rows As Long, cols As Long
+    rows = UBound(dataArr, 1): cols = UBound(dataArr, 2)
+
+    ' 列数が違うなら Master を合わせる（必要ならここでヘッダも再設定）
+    If masterTbl.ListColumns.Count <> cols Then
+        Dim newRange As Range
+        Set newRange = masterTbl.HeaderRowRange.Resize(1, cols)
+        masterTbl.Resize newRange
+    End If
+
+    ' 行方向に拡張して貼付
+    Dim newRange2 As Range
+    Set newRange2 = masterTbl.HeaderRowRange.Resize(rows + 1, cols)
+    masterTbl.Resize newRange2
+    masterTbl.DataBodyRange.Value = dataArr
+End Sub
+
+こちらはMaster 側を強制的に合わせるので運用ミスに強いですが、ヘッダー名（＝Mappingの「出力カラム」）も同時に再設定する処理を別途入れるとより安全です。
+
+⸻
+
+まとめ
+	•	エラーは PasteToMasterByTable の 列数チェックで発生。  ￼
+	•	Mapping の“空行”や“出力カラム空の行”が 列数水増しの最有力原因。テーブルの行削除で解消見込み。  ￼
+	•	Main/List 切替ミスや Master の旧列構成が残っている場合も要注意。  ￼
+
+もしよければ、Mapping の該当シート（Main か List）で “出力カラムが空の行を削除”→再インポートで挙動を教えてください。必要なら、A案（空行スキップ）の実装パッチもこちらで用意します。
