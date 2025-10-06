@@ -37,7 +37,7 @@ Public Sub ApplyFiltersIfExist()
     Set byTable = GroupRulesByTable(rules)
 
     Dim t As Variant
-    For Each t In byTable.Keys
+    For Each t In byTable.keys
         If TableData.Exists(CStr(t)) Then
             Dim arr As Variant
             arr = TableData(CStr(t))
@@ -161,7 +161,7 @@ End Function
 
 Private Function RowMatchesGroups(arr As Variant, r As Long, colIdx As Object, grouped As Object) As Boolean
     Dim g As Variant
-    For Each g In grouped.Keys
+    For Each g In grouped.keys
         If RowMatchesOneGroup(arr, r, colIdx, grouped(g)) Then
             RowMatchesGroups = True
             Exit Function
@@ -282,3 +282,4 @@ Private Function CompareByOp(a As Variant, op As String, b As Variant) As Boolea
         Case Else:  CompareByOp = False
     End Select
 End Function
+
