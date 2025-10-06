@@ -1,48 +1,42 @@
-了解。「クリア時はヘッダーのみ」運用に最適化した最小改良パッチです。
-そのまま標準モジュールに貼って使えます（既存の ClearData / PasteToMasterByTable を置き換え）。
+やったね！範囲指定の修正で直ったの良かったです 👏
+で、「クリア」ボタンの体感が重い件、ListObject のリサイズ／クリアのやり方を変えると一気に速くなります。ポイントは以下の3つだけ。
+
+速くするコツ（要点）
+	1.	ゼロ行に近いサイズへ一発リサイズ
+　今の ResetMasterSize は既定（B4 が空なら 20,000 行）まで広げてから ClearContents しています。ここが重い。
+　→ クリア時は ヘッダーのみ（= 0 行） へ縮めるのが最速です。DataBodyRange.ClearContents 自体を避けるのがキモ。
+	2.	AutoFilter解除は“あるときだけ”
+　ShowAllData はフィルタ未適用状態で呼ぶと内部的に重いです。
+　→ If lo.AutoFilter.FilterMode Then lo.AutoFilter.ShowAllData
+	3.	画面/計算/イベントOFFは既にOK
+　この3つの OFF は効いています。追加で DisplayPageBreaks = False も地味に効きます（ページ分割線の再計算を防ぐ）。
 
 ⸻
 
-1) テーブル操作ユーティリティ（新規 or 追記）
+差し替えコード（最小改修）
 
-'=== modTableUtils.bas ===
-Option Explicit
+A. クリア専用の「超軽量リサイズ」を用意
 
-' ヘッダーのみ（0行）に縮める：最速クリア
-Public Sub ShrinkToHeaderOnly(lo As ListObject)
+'=== クリア専用：テーブルをヘッダーのみ（0行）に縮める ===
+Private Sub ShrinkToHeaderOnly(lo As ListObject)
     If lo Is Nothing Then Exit Sub
-    lo.Resize lo.HeaderRowRange            ' データ行を持たないサイズに一発リサイズ
-End Sub
-
-' AutoFilterがかかってるときだけ解除（無駄なShowAllData回避）
-Public Sub ClearFilterIfNeeded(lo As ListObject)
-    On Error Resume Next
-    If Not lo.AutoFilter Is Nothing Then
-        If lo.AutoFilter.FilterMode Then lo.AutoFilter.ShowAllData
-    End If
-    On Error GoTo 0
-End Sub
-
-' 必要サイズに一発リサイズ（ヘッダー+rows行, cols列）
-Public Sub ResizeForPaste(lo As ListObject, rows As Long, cols As Long)
+    Dim ws As Worksheet: Set ws = lo.Parent
     Dim hdr As Range: Set hdr = lo.HeaderRowRange
-    lo.Resize hdr.Resize(rows + 1, cols)
+    ' データ行を持たないサイズに一発リサイズ
+    lo.Resize hdr
 End Sub
 
+B. ClearData を高速版に置き換え
 
-⸻
-
-2) クリア処理（置き換え）
-
-'=== ClearData（高速クリア：ヘッダーのみ）===
 Public Sub ClearData()
     Dim prevCalc As XlCalculation
-    Dim prevUpd As Boolean, prevEvt As Boolean, prevDisp As Boolean, prevPB As Boolean
+    Dim prevUpd As Boolean, prevEvt As Boolean, prevDisp As Boolean
+    Dim prevPB As Boolean
     Dim t0 As Double: t0 = Timer
 
-    If Len(CurrentMasterTableName) = 0 Then UsePipelineMain ' 既定Main/Listのどちらかに
+    If Len(CurrentMasterTableName) = 0 Then UsePipelineMain
 
-    ' 画面/計算系OFF
+    ' 高速化
     On Error Resume Next
     prevUpd = Application.ScreenUpdating
     prevEvt = Application.EnableEvents
@@ -58,23 +52,26 @@ Public Sub ClearData()
     Dim lo As ListObject
     Set lo = GetListObjectByName(CurrentMasterTableName)
     If Not lo Is Nothing Then
-        ' ページ分割線の再計算を抑止（地味に効く）
+        ' ページ分割線を抑止（効く）
         prevPB = lo.Parent.DisplayPageBreaks
         lo.Parent.DisplayPageBreaks = False
 
-        ' フィルタがかかっている時だけ解除
-        ClearFilterIfNeeded lo
+        ' フィルタ解除は「かかっている時だけ」
+        On Error Resume Next
+        If Not lo.AutoFilter Is Nothing Then
+            If lo.AutoFilter.FilterMode Then lo.AutoFilter.ShowAllData
+        End If
+        On Error GoTo 0
 
-        ' ★最重要：ヘッダーのみ（0行）に縮める
+        ' ★最重要：ヘッダーのみへ縮める（DataBodyRange.ClearContentsは使わない）
         ShrinkToHeaderOnly lo
 
-        ' 必要なら「1行だけ用意」する場合は以下をON（UI都合）：
-        ' ResizeForPaste lo, 1, lo.HeaderRowRange.Columns.Count
-
+        ' もし「初期行を確保しておきたい」運用なら、ここで軽く広げる（例：1行だけ）
+        ' lo.Resize lo.HeaderRowRange.Resize(2, lo.HeaderRowRange.Columns.Count)
         lo.Parent.DisplayPageBreaks = prevPB
     End If
 
-    ' 中間データの解放（あなたの既存ロジックに合わせて）
+    ' 中間データの解放（既存のままでOK）
     HasRaw = False
     IsProcessed = False
     On Error Resume Next
@@ -87,7 +84,7 @@ Public Sub ClearData()
     Set KeyIndexMulti = Nothing
 
 DONE:
-    ' 元に戻す
+    ' 戻す
     On Error Resume Next
     Application.ScreenUpdating = prevUpd
     Application.EnableEvents = prevEvt
@@ -108,36 +105,20 @@ EH:
     MsgBox "ClearDataでエラー: " & Err.Description, vbCritical
 End Sub
 
+これで「大量行にリサイズ→ClearContents」の重い手順を完全に回避できます。
+体感は桁違いに軽くなるはず。
 
 ⸻
 
-3) 貼り付け処理（置き換え）
-
-'=== 貼り付け：必要サイズへ一発Resize→Value代入 ===
-Public Sub PasteToMasterByTable(masterTbl As ListObject, dataArr As Variant)
-    Dim rows As Long, cols As Long
-    rows = UBound(dataArr, 1)
-    cols = UBound(dataArr, 2)
-
-    ' 列数が違ってもここで正規化（Masterを合わせる）
-    If masterTbl.ListColumns.Count <> cols Then
-        ResizeForPaste masterTbl, 0, cols   ' まず列だけ合わせる（0行）
-    End If
-
-    ' 最終サイズへ一発リサイズ（行も一緒に）
-    ResizeForPaste masterTbl, rows, cols
-
-    ' 値を流し込む（DataBodyRange は必ず存在する状態）
-    masterTbl.DataBodyRange.Value = dataArr
-End Sub
-
-これで「クリア時は0行」「貼付時に必要サイズへ一発Resize」という最短ルートになります。
-DataBodyRange.ClearContents を使わないため、行数が多いシートでも劇的に軽くなります。
+補足（運用面の選択肢）
+	•	「B4 の既定行数」運用は Import 時だけに使う
+クリア時は 0 行、Import/Paste 時に必要なだけ一発で広げる（PasteToMasterByTable で Resize 済みなら不要）。
+	•	テーブルの書式劣化対策
+ヘッダーのみリサイズは書式を壊しませんが、スタイルが重い場合は
+lo.TableStyle = "TableStyleLight1" 等の軽量スタイルへ変更も効果的。
+	•	巨大ワークシート対策
+クリア後に ws.UsedRange を軽く触る（Dim dummy:Set dummy = ws.UsedRange）と“幽霊UsedRange”を縮められて保存サイズが下がることがあります。
 
 ⸻
 
-運用メモ
-	•	たまに「見た目で空行を残したい」場合は、ClearData のコメントアウトしてある 1 行リサイズを有効にしてください。
-	•	条件付き書式や検証が重い場合は、テーブルスタイルを軽いものにするのも効果的です（例：lo.TableStyle = "TableStyleLight1"）。
-
-必要なら、既存モジュール名に合わせてサブルーチン名だけ調整します。
+必要なら、既存の ResetMasterSize を「Import/貼り付け専用」にして、ClearData では呼ばない構成に切り分けるパッチも用意できます。試してみて、まだ重い箇所があれば計測ログ（処理段階ごとの Timer）仕込みもご提案します。
