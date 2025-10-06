@@ -1,152 +1,324 @@
-了解。**「0行は不可 → 常に1行は残す」**前提で、速くて安定する改修版です。
-ポイントは「クリア時に1行だけ確保」「列数は貼付前にMaster側を合わせる（エラーにしない）」です。
+了解しました。いただいたコードと仕様を踏まえて、3点それぞれ“原因 → 直し方（具体的なパッチ案）”でまとめます。
+（ここではそのまま適用できる置換コードを提示します。質問なしで一気にいきます。）
 
 ⸻
 
-1) ユーティリティ（新規 or 追記）
+① importFilesに「Main用のCSV」と「List用のCSV」を一緒に入れるとエラー
 
-'=== modTableUtils.bas ===
-Option Explicit
+原因（推定）
 
-' AutoFilterがかかっている時だけ解除
-Public Sub ClearFilterIfNeeded(lo As ListObject)
-    On Error Resume Next
-    If Not lo.AutoFilter Is Nothing Then
-        If lo.AutoFilter.FilterMode Then lo.AutoFilter.ShowAllData
+ImportFiles → LoadAllCsv の読み込みで、フォルダ内の全CSVを対象にしている or 同名キーの再追加が発生／もしくはMappingで必要ないCSVまで触って例外になっている可能性が高いです。
+本来は 「今回のパイプライン（Main か List）で Map_TblNames に列挙されたテーブルだけ」 を読み込めばよく、それ以外のCSVは無視すべきです。
+
+修正方針
+	•	LoadAllCsv を 「要求されたテーブルのみ」 読む実装にします（大文字小文字と拡張子の違いに寛容／余計なCSVは完全スキップ）。
+	•	同じテーブル名が辞書に存在しても上書きに切り替え（Add→Assign）し、重複エラーを避ける。
+
+置換パッチ（modProcess 内の LoadAllCsv を差し替え）
+
+'==============================
+' importFiles から必要CSVを読み込む（要求テーブルのみ）
+'==============================
+Public Function LoadAllCsv(importPath As String, _
+                           tblNames() As String, _
+                           ByRef dict As Object) As Boolean
+    On Error GoTo FAIL
+
+    Dim i As Long
+    If (Not Not tblNames) = 0 Then
+        MsgBox "読み込むテーブルがありません（Mapping未読か空）", vbExclamation
+        LoadAllCsv = False
+        Exit Function
     End If
-    On Error GoTo 0
-End Sub
 
-' 必要列数に合わせて、ヘッダー + nRows 行に一発リサイズ
-Public Sub ResizeTo(lo As ListObject, nRows As Long, Optional nCols As Long = -1)
-    Dim hdr As Range: Set hdr = lo.HeaderRowRange
-    Dim cols As Long
-    If nCols <= 0 Then
-        cols = lo.ListColumns.Count
-    Else
-        cols = nCols
+    If Dir(importPath, vbDirectory) = "" Then
+        MsgBox "入力フォルダが存在しません：" & importPath, vbCritical
+        LoadAllCsv = False
+        Exit Function
     End If
-    If nRows < 1 Then nRows = 1                 ' ★最低1行は確保（0行禁止）
-    lo.Resize hdr.Resize(nRows + 1, cols)
-End Sub
 
+    ' フォルダ内CSVの索引（小文字ベース名→フルパス）を作る
+    Dim idx As Object: Set idx = CreateObject("Scripting.Dictionary")
+    Dim f As String, base As String
+    f = Dir(importPath & "*.csv")
+    Do While Len(f) > 0
+        base = LCase$(Left$(f, InStrRev(f, ".") - 1))   ' 拡張子除去
+        idx(base) = importPath & f                       ' 同名は後勝ちでOK
+        f = Dir()
+    Loop
+
+    ' 要求テーブルだけ読み込む
+    For i = LBound(tblNames) To UBound(tblNames)
+        Dim t As String, key As String, fp As String
+        t = CStr(tblNames(i))
+        key = LCase$(t)
+        If idx.Exists(key) Then
+            fp = idx(key)
+            Dim arr As Variant
+            arr = ParseCsvFile(fp)
+            ' 既に存在しても上書きにする（Add→Assign）
+            dict(t) = arr
+            WriteLog "INFO", "Loaded CSV: " & t & "  rows=" & IIf(IsArray(arr), UBound(arr, 1) - 1, 0)
+        Else
+            ' 必須テーブルが見つからない場合はエラー（必要ならここをWARNに変更可）
+            WriteLog "ERROR", "CSV not found for table: " & t
+            MsgBox "CSVファイルが見つかりません: " & t & vbCrLf & _
+                   "ファイル名は '" & t & ".csv' を想定しています。", vbCritical
+            LoadAllCsv = False
+            Exit Function
+        End If
+    Next
+
+    LoadAllCsv = True
+    Exit Function
+FAIL:
+    WriteLog "ERROR", "LoadAllCsv error: " & Err.Number & " " & Err.Description
+    MsgBox "LoadAllCsvでエラー: " & Err.Description, vbCritical
+    LoadAllCsv = False
+End Function
+
+これで、importFiles に Main と List のCSVが全部入っていても、今のパイプラインで必要なものだけ読むため、エラーを回避できます。
 
 ⸻
 
-2) クリア処理（1行残す高速版）
+② クリア時のパフォーマンスが悪い（20,000行にリサイズ）
 
-'=== Clear：Masterクリア＆中間データ破棄（1行残す高速版）===
+原因
+
+ResetMasterSize が「常に20,000行へリサイズ → クリア」という重い処理になっており、表のリサイズ自体が高コストです。さらに画面更新や再計算の抑制はしていても、巨大範囲の再割り当ては遅いです。
+
+修正方針
+	•	**「リサイズは最小限」**に。基本は DataBodyRange を Delete して 0行にし、必要なら1行だけ確保。
+	•	列構成を崩さずに空にする高速クリア専用関数を用意。
+	•	20,000行の“予約”はやめ、必要時に貼り付け側で拡張（既に PasteToMasterByTable で適切にリサイズしています）。
+
+追加パッチ（modProcess に高速クリアを追加）
+
+'=== 高速クリア：テーブルのデータ部を空に（列構成は維持） ===
+Private Sub FastClearTable(lo As ListObject)
+    If lo Is Nothing Then Exit Sub
+    If lo.DataBodyRange Is Nothing Then
+        ' 既に0行
+        Exit Sub
+    End If
+    ' 行がある場合は全部削除（列は温存）
+    lo.DataBodyRange.Delete xlShiftUp
+End Sub
+
+'=== 既存のResetMasterSizeは使わない方針に切替（呼び出しを置換） ===
+' もし既存呼び出しがある場合は、以下のように置換してください：
+'   ResetMasterSize masterLo
+' → FastClearTable masterLo
+
+ClearData 内の呼び出し置換（概略）
+	•	Master_Main, Master_List それぞれについて FastClearTable を呼ぶ。
+	•	配列や辞書（TableData, KeyIndexSingle, KeyIndexMulti など）もクリア。
+
 Public Sub ClearData()
     Dim prevCalc As XlCalculation
-    Dim prevUpd As Boolean, prevEvt As Boolean, prevDisp As Boolean, prevPB As Boolean
-    Dim t0 As Double: t0 = Timer
-
-    If Len(CurrentMasterTableName) = 0 Then UsePipelineMain
-
-    ' 高速化：画面/計算/イベントOFF
-    On Error Resume Next
-    prevUpd = Application.ScreenUpdating
-    prevEvt = Application.EnableEvents
-    prevDisp = Application.DisplayAlerts
+    Dim prevEvt As Boolean, prevUpd As Boolean
     prevCalc = Application.Calculation
-    Application.ScreenUpdating = False
-    Application.EnableEvents = False
-    Application.DisplayAlerts = False
+    prevEvt = Application.EnableEvents
+    prevUpd = Application.ScreenUpdating
     Application.Calculation = xlCalculationManual
-    On Error GoTo 0
+    Application.EnableEvents = False
+    Application.ScreenUpdating = False
 
-    On Error GoTo EH
+    On Error GoTo FIN
+
     Dim lo As ListObject
-    Set lo = GetListObjectByName(CurrentMasterTableName)
-    If Not lo Is Nothing Then
-        ' ページ分割線の再計算抑止（効く）
-        prevPB = lo.Parent.DisplayPageBreaks
-        lo.Parent.DisplayPageBreaks = False
 
-        ' フィルタがかかっている時だけ解除
-        ClearFilterIfNeeded lo
+    Set lo = GetListObjectByName("Master_Main")
+    If Not lo Is Nothing Then FastClearTable lo
 
-        ' ★最重要：ヘッダー＋1行に一発リサイズ（0行は使わない）
-        ResizeTo lo, 1
+    Set lo = GetListObjectByName("Master_List")
+    If Not lo Is Nothing Then FastClearTable lo
 
-        ' 1行は空のはずだが、安全のためクリア（1行なので軽い）
-        If Not lo.DataBodyRange Is Nothing Then lo.DataBodyRange.ClearContents
-
-        lo.Parent.DisplayPageBreaks = prevPB
-    End If
-
-    ' 中間データの解放（既存ロジック踏襲）
-    HasRaw = False
-    IsProcessed = False
+    ' 中間データのクリア
     On Error Resume Next
-    If (Not Not RawJoined) <> 0 Then Erase RawJoined
-    If (Not Not m_baseRowIdx) <> 0 Then Erase m_baseRowIdx
-    On Error GoTo 0
-    m_baseTblName = ""
     Set TableData = Nothing
     Set KeyIndexSingle = Nothing
     Set KeyIndexMulti = Nothing
-
-DONE:
-    ' 復帰
-    On Error Resume Next
-    Application.ScreenUpdating = prevUpd
-    Application.EnableEvents = prevEvt
-    Application.DisplayAlerts = prevDisp
-    Application.Calculation = prevCalc
+    Erase Map_No: Erase Map_OutCols: Erase Map_DataType
+    Erase Map_Key: Erase Map_Mode: Erase Map_Def
+    Erase Map_IsKey: Erase Map_TblNames
+    Erase Map_SrcCols
     On Error GoTo 0
 
-    MsgBox "初期化しました。（" & Format(Timer - t0, "0.00") & "s）", vbInformation
-    Exit Sub
+    WriteLog "INFO", "ClearData: done (fast)"
 
-EH:
-    On Error Resume Next
-    Application.ScreenUpdating = prevUpd
-    Application.EnableEvents = prevEvt
-    Application.DisplayAlerts = prevDisp
+FIN:
     Application.Calculation = prevCalc
-    On Error GoTo 0
-    MsgBox "ClearDataでエラー: " & Err.Description, vbCritical
+    Application.EnableEvents = prevEvt
+    Application.ScreenUpdating = prevUpd
 End Sub
 
-これで、B4＝20000行に戻す重いリサイズをやめ、常に1行のみ確保します。
-既存の ResetMasterSize は クリア時には使いません（必要なら別用途に残す）。
+これでリサイズの重さを回避でき、クリアは相当速くなります。
+（「常に2万行を用意したい」要求が将来出た場合は、出力直前に必要行数ぶんだけ一括拡張する方が総合的に速いです）
 
 ⸻
 
-3) 貼り付け処理（列数をMaster側に合わせてから貼る）
+③ Definitions の IF/IFALL ロジックで結果が空になる
 
-'=== Masterへ貼付：列を合わせてから、行も一発リサイズして代入 ===
-Public Sub PasteToMasterByTable(masterTbl As ListObject, dataArr As Variant)
-    Dim rows As Long, cols As Long
-    rows = UBound(dataArr, 1)
-    cols = UBound(dataArr, 2)
+現状の式（例）
 
-    ' ★列数が違ってもエラーにせずMasterを合わせる（0行禁止なので行=1で列合わせ）
-    If masterTbl.ListColumns.Count <> cols Then
-        ResizeTo masterTbl, 1, cols
+IF(
+  IFALL(
+    LEFT({pcm_t_景表法遵法チェック結果_総付景品.総付景品2_2},1)="A",
+    RIGHT({pcm_t_景表法遵法チェック結果_総付景品.総付景品2_2},1)="1"
+  ),
+  "A-1",
+  ""
+)
+
+原因
+
+EvaluateExpr → EvalIFLine → EvalOneCondition の実装を見ると、条件式の左辺は “{tbl.col}” 型のトークンを想定しており、LEFT(...) や RIGHT(...) の関数ラップを評価していません。
+そのため LEFT({..},1) のような左辺は値展開されず空（もしくは文字列のまま）になり、比較に失敗 → IFALL が False → 空文字、という挙動になります。
+
+修正方針（2択）
+
+A. 書き方を合わせる（最短）
+
+Definitionsの条件をサポート済みの比較に寄せる。
+例えば STARTSWITH／ENDSWITH 形式を新設せず、LIKE演算で代替できます：
+	•	先頭が「A」か → {...} LIKE "A*"
+	•	末尾が「1」か → {...} LIKE "*1"
+
+つまり次のように書き換えれば、現行 EvalOneCondition（「=」しか見ない）だけでは足りないので、簡易の拡張が必要になります。
+そこで B案の最小実装を入れるのが綺麗です。
+
+B. エンジン側を最小拡張（推奨）
+
+EvalOneCondition に LEFT(...)／RIGHT(...)／MID(...)／LEN(...) を解釈する薄いラッパを追加し、
+左辺にこれらが来た場合も評価できるようにします。
+（さらに STARTSWITH(expr,"A")／ENDSWITH(expr,"1")／CONTAINS(expr,"...") も対応しておくと柔軟性UP）
+
+置換パッチ（modJoinAndEval の EvalOneCondition を差し替え）
+
+Private Function EvalOneCondition(cond As String, baseTbl As String, baseRow As Long, myKey As String, _
+                                  ByVal processed As Boolean, ByVal outColIndex As Long) As Boolean
+    ' サポート:
+    '   1) A=B 比較（既存）
+    '   2) LEFT({tbl.col},n)="X"
+    '   3) RIGHT({tbl.col},n)="X"
+    '   4) MID({tbl.col},start,len)="X"
+    '   5) LEN({tbl.col})=N
+    '   6) STARTSWITH({tbl.col},"X") / ENDSWITH({tbl.col},"X") / CONTAINS({tbl.col},"X")
+    '   7) LIKE({tbl.col},"pattern")   例: LIKE({..},"A*"), LIKE({..},"*1")
+
+    Dim p As Long, leftExpr As String, rightExpr As String
+    cond = Trim$(cond)
+
+    ' LIKE(...) 形式
+    If UCase$(Left$(cond, 5)) = "LIKE(" And Right$(cond, 1) = ")" Then
+        Dim inside As String, args As Collection
+        inside = Mid$(cond, 6, Len(cond) - 6) ' 括弧内
+        Set args = SplitArgs(inside)
+        If args.Count = 2 Then
+            Dim act As String, pat As String
+            act = GetScalarValue(args(1), baseTbl, baseRow, myKey, processed, outColIndex)
+            pat = StripQuotes(args(2))
+            EvalOneCondition = (act Like pat)
+            Exit Function
+        End If
     End If
 
-    ' ★必要行に一発リサイズ（最低1行保証）
-    ResizeTo masterTbl, rows, cols
+    ' STARTSWITH/ENDSWITH/CONTAINS 形式
+    Dim u As String: u = UCase$(cond)
+    If Left$(u, 11) = "STARTSWITH" Or Left$(u, 9) = "ENDSWITH" Or Left$(u, 8) = "CONTAINS" Then
+        Dim fn As String, ins As String, a As Collection
+        fn = Left$(cond, InStr(cond, "(") - 1)
+        ins = Mid$(cond, InStr(cond, "(") + 1, Len(cond) - InStr(cond, "(") - 1) ' 括弧内〜)
+        Set a = SplitArgs(ins)
+        If a.Count = 2 Then
+            Dim sVal As String, kw As String
+            sVal = GetScalarValue(a(1), baseTbl, baseRow, myKey, processed, outColIndex)
+            kw = StripQuotes(a(2))
+            Select Case UCase$(fn)
+                Case "STARTSWITH": EvalOneCondition = (Left$(sVal, Len(kw)) = kw): Exit Function
+                Case "ENDSWITH":   EvalOneCondition = (Right$(sVal, Len(kw)) = kw): Exit Function
+                Case "CONTAINS":   EvalOneCondition = (InStr(1, sVal, kw, vbTextCompare) > 0): Exit Function
+            End Select
+        End If
+    End If
 
-    ' rows=0（0件結果）の場合：1行残るだけで値代入は不要
-    If rows >= 1 Then
-        masterTbl.DataBodyRange.Value = dataArr
+    ' A=B 形式（既存＋LEFT/RIGHT/MID/LENを左辺で許容）
+    p = InStr(cond, "=")
+    If p = 0 Then Exit Function
+    leftExpr = Trim$(Left$(cond, p - 1))
+    rightExpr = Trim$(Mid$(cond, p + 1))
+
+    Dim expected As String: expected = StripQuotes(rightExpr)
+    Dim actual As String
+    actual = GetScalarValue(leftExpr, baseTbl, baseRow, myKey, processed, outColIndex)
+
+    EvalOneCondition = (actual = expected)
+End Function
+
+' 左辺のスカラ式を評価（{tbl.col} / LEFT/RIGHT/MID/LEN を解釈）
+Private Function GetScalarValue(expr As String, baseTbl As String, baseRow As Long, myKey As String, _
+                                ByVal processed As Boolean, ByVal outColIndex As Long) As String
+    Dim u As String: u = UCase$(Trim$(expr))
+    Dim inside As String, a As Collection
+
+    If Left$(u, 5) = "LEFT(" And Right$(u, 1) = ")" Then
+        inside = Mid$(expr, 6, Len(expr) - 6)
+        Set a = SplitArgs(inside)
+        If a.Count = 2 Then
+            Dim s As String, n As Long
+            s = GetScalarValue(a(1), baseTbl, baseRow, myKey, processed, outColIndex)
+            n = CLng(Val(a(2)))
+            GetScalarValue = Left$(s, n)
+            Exit Function
+        End If
+    ElseIf Left$(u, 6) = "RIGHT(" And Right$(u, 1) = ")" Then
+        inside = Mid$(expr, 7, Len(expr) - 7)
+        Set a = SplitArgs(inside)
+        If a.Count = 2 Then
+            Dim s2 As String, n2 As Long
+            s2 = GetScalarValue(a(1), baseTbl, baseRow, myKey, processed, outColIndex)
+            n2 = CLng(Val(a(2)))
+            GetScalarValue = Right$(s2, n2)
+            Exit Function
+        End If
+    ElseIf Left$(u, 4) = "MID(" And Right$(u, 1) = ")" Then
+        inside = Mid$(expr, 5, Len(expr) - 5)
+        Set a = SplitArgs(inside)
+        If a.Count = 3 Then
+            Dim s3 As String, st As Long, ln As Long
+            s3 = GetScalarValue(a(1), baseTbl, baseRow, myKey, processed, outColIndex)
+            st = CLng(Val(a(2)))
+            ln = CLng(Val(a(3)))
+            GetScalarValue = Mid$(s3, st, ln)
+            Exit Function
+        End If
+    ElseIf Left$(u, 4) = "LEN(" And Right$(u, 1) = ")" Then
+        inside = Mid$(expr, 5, Len(expr) - 5)
+        Dim s4 As String
+        s4 = GetScalarValue(inside, baseTbl, baseRow, myKey, processed, outColIndex)
+        GetScalarValue = CStr(Len(s4))
+        Exit Function
+    End If
+
+    ' 最終的には {tbl.col} を解決
+    If processed Then
+        GetScalarValue = ResolveTokenProcessed(expr, baseTbl, baseRow, myKey, outColIndex)
     Else
-        ' 念のため空にしておく
-        If Not masterTbl.DataBodyRange Is Nothing Then masterTbl.DataBodyRange.ClearContents
+        GetScalarValue = ResolveTokenRaw(expr, baseTbl, baseRow, myKey)
     End If
-End Sub
+End Function
 
-これで「列数不一致エラー」を出さずにMaster側を正規化してから貼り付けます。
-0件結果でも最低1行は残る仕様に対応済み。
+これで、今の書き方（LEFT/RIGHT）をそのまま通せます。
+併せて STARTSWITH/ENDSWITH/CONTAINS/LIKE を認識するので、今後の条件記述も柔軟になります。
 
 ⸻
 
-補足（運用のヒント）
-	•	B4の既定行数は未使用に：クリア時に大量行へ戻すのは重いので不採用。必要なら「見た目の空行」だけ別ボタンで増やす運用に分離すると快適です。
-	•	UsedRange肥大が気になるとき：たまに Dim tmp:Set tmp = masterTbl.Parent.UsedRange を呼ぶと小さくなることがあります。
-	•	条件付き書式が重いテーブルは、スタイルをライト系にするとさらに体感が上がります（例：masterTbl.TableStyle = "TableStyleLight1"）。
+動作期待
+	•	①：Main/List混在のCSV置きっぱなしOK。現在のパイプラインが必要とするCSVのみ読むためエラー解消。
+	•	②：Clearが一瞬で終わるようになります（表の巨大リサイズ撤廃）。
+	•	③：定義式の LEFT/RIGHT を正しく評価し、"A-1" が入るようになります。
 
-このまま置き換えて動くはずです。もし既存の他処理と干渉する箇所があれば、その部分だけ調整版をすぐ出します。
+⸻
+
+必要なら、私の方で該当モジュールの該当位置に“入れ替え済み全文”を流し込みます。まずは上の差分を反映してみてください。
