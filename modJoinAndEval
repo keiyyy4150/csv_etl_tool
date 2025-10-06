@@ -784,3 +784,4 @@ CONT_T:
     Next
     BuildRawValueIgnoringMode = acc
 End Function
+
