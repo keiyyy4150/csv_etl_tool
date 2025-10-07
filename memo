@@ -1,147 +1,133 @@
-はい、可能です。いちばんシンプルで堅い方法は、**「Definitionsのロジックをテンプレート化」＋「Mappingの定義IDに引数を一緒に書く」**方式です。
-既存の評価器（{テーブル.列} トークンや IF/IFALL 等）はそのまま使い、展開（プレースホルダ置換）だけ前段で行う構成にします。
+どこをどう変えたらいいかわかりません。
+現状のコードは以下のようになっています。
 
-⸻
 
-提案する運用ルール
-	•	Mappingの定義IDセルに「定義名|引数1|引数2|…」という形で書く
-例）
-A1_PREFIX_SUFFIX|{pcm_t_コンプラ相談.相談者部署CD}|A|1
-	•	Definitionsシートのロジックは、{#1} {#2} {#3}… というプレースホルダを使って書く
-例）
-定義ID: A1_PREFIX_SUFFIX
-ロジック:
+Option Explicit
 
-IF(
-  IFALL(
-    LEFT({#1},1)="{#2}",
-    RIGHT({#1},1)="{#3}"
-  ),
-  "A-1",
-  ""
-)
+'=========================================================
+' Definitionsシートから「定義ID」に対応するロジック群を連結して返す
+' シート要件（ListObject名："Definitions" 推奨）：
+'   見出し： 定義ID / バージョン(任意) / 行No / ロジック / （備考 任意）
+'   - 同じ定義IDの中で、最大のバージョン番号を採用（バージョン列がなければ全行対象）
+'   - 行No昇順で「ロジック」を vbLf 連結して返却
+'=========================================================
 
-※ {#1} には Mapping 側の第1引数（ここでは {pcm_t_コンプラ相談.相談者部署CD}）が入ります。{#2} は “A”、{#3} は “1”。
+Public Function BuildDefinitionFromSheet(defId As String, Optional definitionsListName As String = "Definitions") As String
+    Dim lo As ListObject
+    Set lo = GetListObjectByNameEx(definitionsListName)
+    If lo Is Nothing Then Err.Raise vbObjectError + 3401, , "Definitionsテーブル(" & definitionsListName & ")が見つかりません。"
+    If lo.DataBodyRange Is Nothing Then BuildDefinitionFromSheet = "": Exit Function
 
-	•	これで、Definitionsの再利用性が上がり、Mapping側で参照する列やパラメータだけ差し替えできます。
-
-⸻
-
-具体的な実装（最小差分）
-
-1) 定義IDのパース関数（modMappingHelper か modDifinitions に追加）
-
-' 定義IDセルの文字列を「定義名」と「引数配列」に分解する
-' 形式: DefName|arg1|arg2|...
-Public Sub ParseDefId(ByVal defIdRaw As String, ByRef defName As String, ByRef defArgs() As String)
-    Dim parts() As String, i As Long
-    defIdRaw = Trim$(defIdRaw)
-    parts = Split(defIdRaw, "|")
-
-    If UBound(parts) >= 0 Then
-        defName = Trim$(parts(0))
-    Else
-        defName = ""
+    ' ヘッダー列位置
+    Dim cId As Long, cVer As Long, cLine As Long, cLogic As Long
+    cId = FindHeaderIndexEx(lo, "定義ID")
+    cVer = FindHeaderIndexEx(lo, "バージョン")    ' 任意
+    cLine = FindHeaderIndexEx(lo, "行No")
+    cLogic = FindHeaderIndexEx(lo, "ロジック")
+    If cId = 0 Or cLine = 0 Or cLogic = 0 Then
+        Err.Raise vbObjectError + 3402, , "Definitionsの見出しは『定義ID／行No／ロジック（＋任意でバージョン）』が必要です。"
     End If
 
-    If UBound(parts) >= 1 Then
-        ReDim defArgs(1 To UBound(parts))
-        For i = 1 To UBound(parts)
-            defArgs(i) = Trim$(parts(i))
+    ' 最大バージョン
+    Dim maxVer As Long
+    maxVer = MaxVersionForIdEx(lo, cId, cVer, defId)
+
+    ' 行No→ロジック の一時格納
+    Dim dict As Object: Set dict = CreateObject("Scripting.Dictionary")
+
+    Dim r As Range, idv As String, vv As Variant, lineNo As Long, logicText As String
+    For Each r In lo.DataBodyRange.rows
+        idv = CStr(r.Cells(1, cId).Value)
+        If StrComp(idv, defId, vbTextCompare) = 0 Then
+            If cVer > 0 Then
+                vv = r.Cells(1, cVer).Value
+                If IsNumeric(vv) Then
+                    If CLng(vv) <> maxVer Then GoTo CONT_ROW
+                Else
+                    GoTo CONT_ROW
+                End If
+            End If
+
+            vv = r.Cells(1, cLine).Value
+            If Not IsNumeric(vv) Then GoTo CONT_ROW
+            lineNo = CLng(vv)
+
+            logicText = CStr(r.Cells(1, cLogic).Value)
+            If Len(Trim$(logicText)) = 0 Then GoTo CONT_ROW
+
+            dict(lineNo) = logicText   ' 同じ行Noが重複していたら後勝ち
+        End If
+CONT_ROW:
+    Next
+
+    If dict.Count = 0 Then BuildDefinitionFromSheet = "": Exit Function
+
+    ' 昇順でJoin
+    Dim keys() As Variant, i As Long, j As Long, tmp As Variant, acc As String
+    keys = dict.keys
+    For i = LBound(keys) To UBound(keys) - 1
+        For j = i + 1 To UBound(keys)
+            If CLng(keys(i)) > CLng(keys(j)) Then
+                tmp = keys(i): keys(i) = keys(j): keys(j) = tmp
+            End If
         Next
-    Else
-        Erase defArgs
-    End If
-End Sub
+    Next
 
-既存の Map_Def 配列に「生の定義ID」を入れていると思いますが、評価直前に都度パースすれば、既存の読み込みロジックを壊しません（後方互換）。
+    acc = ""
+    For i = LBound(keys) To UBound(keys)
+        If Len(acc) = 0 Then
+            acc = dict(keys(i))
+        Else
+            acc = acc & vbLf & dict(keys(i))
+        End If
+    Next
 
-2) Definitionsロジックのテンプレート展開（置換）関数（modDifinitions に追加）
-
-' Definitionsのロジックテンプレート内の {#i} を引数で置換する
-Public Function ExpandDefLogic(ByVal logicTemplate As String, ByRef defArgs() As String) As String
-    Dim i As Long, s As String
-    s = logicTemplate
-    If Not (Not defArgs) = 0 Then
-        For i = LBound(defArgs) To UBound(defArgs)
-            s = Replace$(s, "{#" & CStr(i) & "}", defArgs(i))
-        Next
-    End If
-    ExpandDefLogic = s
+    BuildDefinitionFromSheet = acc
 End Function
 
-引数には {テーブル.列} のトークンもそのまま渡してください。
-展開後の式は、今の評価器（EvaluateExpr など）にそのまま投げられます。
+'==================== ユーティリティ（このモジュール内限定名） ====================
 
-3) 評価直前にテンプレート展開を差し込む（既存の「定義ID→ロジック取得→Evaluate」フローの直前）
+Private Function GetListObjectByNameEx(nameOrRange As String) As ListObject
+    Dim ws As Worksheet, lo As ListObject
+    For Each ws In ThisWorkbook.Worksheets
+        For Each lo In ws.ListObjects
+            If StrComp(lo.name, nameOrRange, vbTextCompare) = 0 Then
+                Set GetListObjectByNameEx = lo
+                Exit Function
+            End If
+        Next
+    Next
+    Set GetListObjectByNameEx = Nothing
+End Function
 
-あなたのコード上で、
-	•	「定義IDからDefinitionsのロジック文字列を取得」して
-	•	それを EvaluateExpr 的な関数に渡している箇所
-があるはずです。そこを次のように変更します。
+Private Function FindHeaderIndexEx(lo As ListObject, headerName As String) As Long
+    Dim i As Long, s As String
+    For i = 1 To lo.HeaderRowRange.Columns.Count
+        s = Trim$(CStr(lo.HeaderRowRange.Cells(1, i).Value))
+        If StrComp(s, headerName, vbTextCompare) = 0 Then
+            FindHeaderIndexEx = i
+            Exit Function
+        End If
+    Next
+    FindHeaderIndexEx = 0
+End Function
 
-Dim defName As String, defArgs() As String
-Dim logicTmpl As String, logicExp As String
+Private Function MaxVersionForIdEx(lo As ListObject, idxId As Long, idxVer As Long, defId As String) As Long
+    Dim maxv As Long: maxv = 1
+    Dim r As Range, v As Variant, idv As String, vv As Variant
+    If lo.DataBodyRange Is Nothing Then MaxVersionForIdEx = 1: Exit Function
 
-' 1) 定義IDを分解
-ParseDefId Map_Def(i), defName, defArgs
-
-' 2) Definitionsシートから defName に対応するロジックテンプレートを取得
-logicTmpl = GetDefinitionLogicByName(defName)  ' ←既存関数/相当の取得処理
-
-' 3) テンプレートに引数を展開
-logicExp = ExpandDefLogic(logicTmpl, defArgs)
-
-' 4) 展開後のロジックを評価器に渡す
-result = EvaluateExpr(logicExp, baseTbl, baseRow, myKey, processed, outColIndex)
-
-GetDefinitionLogicByName は既存の「定義ID→ロジック」解決関数でOK（必要なら定義ID列をキーにVLookUpしている処理をそのまま使う）。
-**既存の定義ID（引数なし）**も、ParseDefId で defArgs が空になるだけなので、後方互換です。
-
-⸻
-
-使い方の例（実際の式）
-
-Mapping 側（定義IDセル）
-
-A1_PREFIX_SUFFIX|{pcm_t_コンプラ相談.相談者部署CD}|A|1
-
-Definitions 側
-	•	定義ID: A1_PREFIX_SUFFIX
-	•	ロジック:
-
-IF(
-  IFALL(
-    LEFT({#1},1)="{#2}",
-    RIGHT({#1},1)="{#3}"
-  ),
-  "A-1",
-  ""
-)
-
-{#1} には 列トークンをそのまま渡すので、展開後は
-LEFT({pcm_t_コンプラ相談.相談者部署CD},1)="A" のように既存評価器が解釈できる構文になります。
-
-⸻
-
-よくある疑問・注意点
-	•	引数にダブルクォーテーションは必要？
-文字リテラルなら "A" のようにクォート付きで渡すのが無難です。
-列トークン {テーブル.列} はクォート不要。
-	•	区切り記号は | 固定？
-CSVの都合等で | が使いづらければ、|| や >>> でもOK。ParseDefId の Split を合わせるだけです。
-	•	引数の数がテンプレ側より少ない/多い
-少ない場合は {#i} が残るので、そのままだとコンパイル/評価で落ちます。
-運用上は「Definitionsのテンプレに書かれた個数分、必ず Mapping で渡す」規律にしてください。
-必要であれば ExpandDefLogic 内で 未解決プレースホルダが残っていたらエラーにするチェックも追加できます。
-	•	ネストや複雑な論理
-展開は単なる文字置換なので、IF, IFALL, LIKE, STARTSWITH 等の既存拡張と自由に組み合わせてOKです。
-
-⸻
-
-まとめ
-	•	✅ 可能です。
-	•	✅ 互換を壊さず、Mappingの定義IDに「定義名|引数…」を記述 → Definitions は {#i} で受け取る方式が簡潔で堅牢。
-	•	✅ 実装は パース（ParseDefId） と テンプレ展開（ExpandDefLogic）、そして 評価直前での差し込み の3点だけ。
-
-この方針で入れておけば、今回の「A-1 判定」のようなロジックはもちろん、他の列・他の条件にも再利用が効きます。必要なら、名前付き引数（DEF(x=..., y=...)）版やデフォルト値にも拡張できますが、まずは上記の番号付き引数で運用を始めるのがスムーズです。
+    For Each r In lo.DataBodyRange.rows
+        v = r.Cells(1, idxId).Value
+        idv = CStr(v)
+        If StrComp(idv, defId, vbTextCompare) = 0 Then
+            If idxVer > 0 Then
+                vv = r.Cells(1, idxVer).Value
+                If IsNumeric(vv) Then
+                    If CLng(vv) > maxv Then maxv = CLng(vv)
+                End If
+            End If
+        End If
+    Next
+    MaxVersionForIdEx = maxv
+End Function
