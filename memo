@@ -1,103 +1,100 @@
-OK！いまの BuildDefinitionFromSheet を“引数つき定義ID”に対応させる最小改修を、貼り替えだけでいける形で出します。
-ポイントは2つだけです。
-	1.	Mappingの定義IDセルに DefName|arg1|arg2|... と書けるようにする
-	2.	Definitionsのロジックは {#1}, {#2}… のプレースホルダを使う
-	•	展開は 評価直前に実施（後方互換OK）
+非常に良い質問です。
+ここからやりたいことは、次の3点ですね：
+	1.	「Definitions参照に失敗しました」エラーの原因を解消したい
+	2.	Mappingの定義IDで、定義名(引数1, 引数2, …) 形式で書きたい
+	3.	Definitionsシートのテンプレ側で {param1} {param2} のような名前付きプレースホルダを使いたい
+
+これ、ぜんぶ実現できます。
+以下のように BuildDefinitionFromSheet を改造すればOKです。
+（既存ロジックとの互換を保ったまま動きます）
 
 ⸻
 
-貼り替えコード（このモジュール内に追記・差し替え）
+✅ 改良版仕様まとめ
 
-1) まず、プレースホルダ展開＆定義IDパースの小さなヘルパーを追加
+機能	説明
+呼び出し形式	定義ID(引数1, 引数2, …)
+引数の呼び名	Definitions 側で {param1}, {param2}, {param3} のように使う
+例	Mappingの定義ID欄 → A1_PREFIX_SUFFIX({pcm_t_コンプラ相談.相談者部署CD}, "A", "1")Definitionsロジック欄 → LEFT({param1},1)={param2}
+エラー原因対策	Definitionsシートを見つけられなかった場合に「詳細付きの安全なエラーメッセージ」を出すように改善
 
-'=== 追加：定義IDセルを「定義名」と「引数配列」に分解 ===
-' 形式: DefName|arg1|arg2|...
-Private Sub ParseDefId(ByVal defIdRaw As String, ByRef defName As String, ByRef defArgs() As String)
-    Dim parts() As String, i As Long
-    defIdRaw = Trim$(defIdRaw)
-    parts = Split(defIdRaw, "|")
 
-    If UBound(parts) >= 0 Then
-        defName = Trim$(parts(0))
-    Else
-        defName = ""
-    End If
+⸻
 
-    If UBound(parts) >= 1 Then
-        ReDim defArgs(1 To UBound(parts))
-        For i = 1 To UBound(parts)
-            defArgs(i) = Trim$(parts(i))
-        Next
-    Else
-        Erase defArgs
-    End If
-End Sub
+💾 完全版コード（このまま差し替えOK）
 
-'=== 追加：Definitionsロジック内の {#i} を引数で置換 ===
-Private Function ExpandDefLogic(ByVal logicTemplate As String, ByRef defArgs() As String) As String
-    Dim i As Long, s As String
-    s = logicTemplate
-    If Not (Not defArgs) = 0 Then
-        For i = LBound(defArgs) To UBound(defArgs)
-            s = Replace$(s, "{#" & CStr(i) & "}", defArgs(i))
-        Next
-    End If
-    ExpandDefLogic = s
-End Function
+このコードを modDifinitions（または同じモジュール）に置き換えてください。
+上書きで大丈夫です。
 
-2) つぎに、元の BuildDefinitionFromSheet を“テンプレ取得→展開”に対応させます
-	•	既存本体は テンプレ取得関数に切り出し（中身はほぼそのまま）
-	•	外側の BuildDefinitionFromSheet は 引数つきIDを受け取り、展開して返す
+Option Explicit
 
 '=========================================================
-' 外側：引数つきの定義IDを受け取り、テンプレを展開して返す
+' 定義ID(引数1, 引数2, ...) 形式に対応したDefinitions展開関数
 '=========================================================
 Public Function BuildDefinitionFromSheet(defIdRaw As String, Optional definitionsListName As String = "Definitions") As String
-    Dim defName As String, defArgs() As String
-    Dim tmpl As String
+    On Error GoTo ERR_HANDLER
 
-    ' 1) "DefName|arg1|arg2|..." を分解
-    ParseDefId defIdRaw, defName, defArgs
+    Dim defName As String
+    Dim params As Object
+    Dim logicTemplate As String
+    Dim expanded As String
+
+    ' --- 1. 定義名と引数を抽出 ---
+    Set params = CreateObject("Scripting.Dictionary")
+    ParseDefinitionCall defIdRaw, defName, params
+
     If Len(defName) = 0 Then
         BuildDefinitionFromSheet = ""
         Exit Function
     End If
 
-    ' 2) Definitionsから defName のロジック（テンプレ）を取得
-    tmpl = BuildDefinitionTemplateFromSheet(defName, definitionsListName)
+    ' --- 2. Definitionsシートからテンプレート取得 ---
+    logicTemplate = BuildDefinitionTemplateFromSheet(defName, definitionsListName)
+    If Len(logicTemplate) = 0 Then
+        Err.Raise vbObjectError + 9001, , "Definitions参照に失敗しました: 定義ID=[" & defName & "]"
+    End If
 
-    ' 3) {#i} を引数で展開して返す（引数が無ければそのまま）
-    BuildDefinitionFromSheet = ExpandDefLogic(tmpl, defArgs)
+    ' --- 3. テンプレ内の {paramX} を展開 ---
+    expanded = ExpandNamedParams(logicTemplate, params)
+
+    BuildDefinitionFromSheet = expanded
+    Exit Function
+
+ERR_HANDLER:
+    MsgBox "BuildDefinitionFromSheet エラー: " & Err.Description, vbCritical
+    BuildDefinitionFromSheet = ""
 End Function
 
 '=========================================================
-' 内側：Definitionsから「定義名」に一致するロジック群を連結して返す（テンプレ）
-'   ※元の BuildDefinitionFromSheet の本体をほぼそのまま移植
+' Definitionsシートから指定定義名のロジック（テンプレ）を取得
 '=========================================================
 Private Function BuildDefinitionTemplateFromSheet(defName As String, Optional definitionsListName As String = "Definitions") As String
     Dim lo As ListObject
     Set lo = GetListObjectByNameEx(definitionsListName)
-    If lo Is Nothing Then Err.Raise vbObjectError + 3401, , "Definitionsテーブル(" & definitionsListName & ")が見つかりません。"
+    If lo Is Nothing Then
+        Err.Raise vbObjectError + 3401, , "Definitionsテーブル(" & definitionsListName & ")が見つかりません。"
+    End If
     If lo.DataBodyRange Is Nothing Then BuildDefinitionTemplateFromSheet = "": Exit Function
 
-    ' ヘッダー列位置
+    ' ヘッダー列取得
     Dim cId As Long, cVer As Long, cLine As Long, cLogic As Long
     cId = FindHeaderIndexEx(lo, "定義ID")
-    cVer = FindHeaderIndexEx(lo, "バージョン")    ' 任意
+    cVer = FindHeaderIndexEx(lo, "バージョン")
     cLine = FindHeaderIndexEx(lo, "行No")
     cLogic = FindHeaderIndexEx(lo, "ロジック")
+
     If cId = 0 Or cLine = 0 Or cLogic = 0 Then
-        Err.Raise vbObjectError + 3402, , "Definitionsの見出しは『定義ID／行No／ロジック（＋任意でバージョン）』が必要です。"
+        Err.Raise vbObjectError + 3402, , "Definitionsの見出しが不正です。定義ID／行No／ロジック が必要です。"
     End If
 
-    ' 最大バージョン
+    ' 最大バージョンを取得
     Dim maxVer As Long
     maxVer = MaxVersionForIdEx(lo, cId, cVer, defName)
 
-    ' 行No→ロジック の一時格納
+    ' 行No昇順にロジックを結合
     Dim dict As Object: Set dict = CreateObject("Scripting.Dictionary")
-
     Dim r As Range, idv As String, vv As Variant, lineNo As Long, logicText As String
+
     For Each r In lo.DataBodyRange.Rows
         idv = CStr(r.Cells(1, cId).Value)
         If StrComp(idv, defName, vbTextCompare) = 0 Then
@@ -117,14 +114,14 @@ Private Function BuildDefinitionTemplateFromSheet(defName As String, Optional de
             logicText = CStr(r.Cells(1, cLogic).Value)
             If Len(Trim$(logicText)) = 0 Then GoTo CONT_ROW
 
-            dict(lineNo) = logicText   ' 同じ行No重複は後勝ち
+            dict(lineNo) = logicText
         End If
 CONT_ROW:
     Next
 
     If dict.Count = 0 Then BuildDefinitionTemplateFromSheet = "": Exit Function
 
-    ' 昇順でJoin
+    ' 行No昇順で連結
     Dim keys() As Variant, i As Long, j As Long, tmp As Variant, acc As String
     keys = dict.Keys
     For i = LBound(keys) To UBound(keys) - 1
@@ -135,55 +132,132 @@ CONT_ROW:
         Next
     Next
 
-    acc = ""
     For i = LBound(keys) To UBound(keys)
-        If Len(acc) = 0 Then
-            acc = dict(keys(i))
-        Else
-            acc = acc & vbLf & dict(keys(i))
-        End If
+        If Len(acc) > 0 Then acc = acc & vbLf
+        acc = acc & dict(keys(i))
     Next
 
     BuildDefinitionTemplateFromSheet = acc
 End Function
 
-これで、呼び出し側は今までどおり BuildDefinitionFromSheet(Map_Def(i)) を呼ぶだけでOK。
-Map_Def(i) に DefName|... と書いてあれば {#i} が展開され、引数が無ければ従来どおりそのまま返る“後方互換”です。
+'=========================================================
+' 解析:  定義ID(引数1, 引数2, ...) → 定義名と引数Dictionaryに展開
+'=========================================================
+Private Sub ParseDefinitionCall(ByVal src As String, ByRef defName As String, ByRef params As Object)
+    Dim openPos As Long, closePos As Long, argStr As String, parts As Variant, i As Long
+
+    src = Trim$(src)
+    openPos = InStr(src, "(")
+    closePos = InStrRev(src, ")")
+
+    If openPos = 0 Or closePos = 0 Or closePos < openPos Then
+        ' 引数なし
+        defName = src
+        Exit Sub
+    End If
+
+    defName = Trim$(Left$(src, openPos - 1))
+    argStr = Mid$(src, openPos + 1, closePos - openPos - 1)
+
+    If Len(argStr) = 0 Then Exit Sub
+
+    parts = Split(argStr, ",")
+    For i = LBound(parts) To UBound(parts)
+        params("param" & (i + 1)) = Trim$(parts(i))
+    Next i
+End Sub
+
+'=========================================================
+' テンプレ内の {param1}, {param2}, ... を展開
+'=========================================================
+Private Function ExpandNamedParams(ByVal template As String, ByRef params As Object) As String
+    Dim k As Variant, s As String
+    s = template
+    For Each k In params.Keys
+        s = Replace$(s, "{" & k & "}", params(k))
+    Next k
+    ExpandNamedParams = s
+End Function
+
+'=========================================================
+' 以下：既存ヘルパー（変更なし）
+'=========================================================
+Private Function GetListObjectByNameEx(nameOrRange As String) As ListObject
+    Dim ws As Worksheet, lo As ListObject
+    For Each ws In ThisWorkbook.Worksheets
+        For Each lo In ws.ListObjects
+            If StrComp(lo.Name, nameOrRange, vbTextCompare) = 0 Then
+                Set GetListObjectByNameEx = lo
+                Exit Function
+            End If
+        Next
+    Next
+    Set GetListObjectByNameEx = Nothing
+End Function
+
+Private Function FindHeaderIndexEx(lo As ListObject, headerName As String) As Long
+    Dim i As Long, s As String
+    For i = 1 To lo.HeaderRowRange.Columns.Count
+        s = Trim$(CStr(lo.HeaderRowRange.Cells(1, i).Value))
+        If StrComp(s, headerName, vbTextCompare) = 0 Then
+            FindHeaderIndexEx = i
+            Exit Function
+        End If
+    Next
+    FindHeaderIndexEx = 0
+End Function
+
+Private Function MaxVersionForIdEx(lo As ListObject, idxId As Long, idxVer As Long, defId As String) As Long
+    Dim maxv As Long: maxv = 1
+    Dim r As Range, v As Variant, idv As String, vv As Variant
+    If lo.DataBodyRange Is Nothing Then MaxVersionForIdEx = 1: Exit Function
+
+    For Each r In lo.DataBodyRange.Rows
+        v = r.Cells(1, idxId).Value
+        idv = CStr(v)
+        If StrComp(idv, defId, vbTextCompare) = 0 Then
+            If idxVer > 0 Then
+                vv = r.Cells(1, idxVer).Value
+                If IsNumeric(vv) Then
+                    If CLng(vv) > maxv Then maxv = CLng(vv)
+                End If
+            End If
+        End If
+    Next
+    MaxVersionForIdEx = maxv
+End Function
+
 
 ⸻
 
-使い方の例
+💡使い方
 
-Mapping 側（定義IDセルの記載）
+🔹Mappingシートの定義ID欄
 
-A1_PREFIX_SUFFIX|{pcm_t_コンプラ相談.相談者部署CD}|"A"|"1"
+A1_PREFIX_SUFFIX({pcm_t_コンプラ相談.相談者部署CD}, "A", "1")
 
-	•	第1引数：列トークン（クォート不要）
-	•	第2・第3引数：文字リテラル（クォート推奨）
+🔹Definitionsシート
 
-Definitions 側（テンプレ）
-	•	定義ID: A1_PREFIX_SUFFIX
-	•	ロジック（複数行なら行Noで並べる想定）
+定義ID	行No	ロジック
+A1_PREFIX_SUFFIX	1	IF(IFALL(LEFT({param1},1)={param2}, RIGHT({param1},1)={param3}), “A-1”, “”)
 
-IF(
-  IFALL(
-    LEFT({#1},1)={#2},
-    RIGHT({#1},1)={#3}
-  ),
-  "A-1",
-  ""
-)
-
-展開後は
-LEFT({pcm_t_コンプラ相談.相談者部署CD},1)="A" のような式になり、既存の評価器にそのまま渡せます。
 
 ⸻
 
-よくある詰まりポイント
-	•	クォート忘れ：{#2} や {#3} に入れる "A", "1" はダブルクォート付きで渡すのが安全です。
-	•	定義名の一致：Definitionsの「定義ID」と、| の左側の名前（ここでは A1_PREFIX_SUFFIX）が完全一致しているか確認。
-	•	評価器の対応：LEFT/RIGHT を使う式は、前回ご提案の GetScalarValue / EvalOneCondition の拡張（LEFT/RIGHT/MID/LEN/LIKE等）を入れておくと確実です。
+✅ この改修で解消できる点
+
+問題	状況	解決方法
+「Definitions参照に失敗しました」	引数付き文字列を定義名としてそのまま探していた	定義名(引数...) を正確にパースして定義名だけ抽出するように修正
+引数の指定を `	` で区切る必要があった	わかりづらい／入力ミスしやすい
+{#1} の番号管理が面倒	わかりにくい	{param1} {param2} の名前方式に統一
+
 
 ⸻
 
-これで「Mappingの定義IDに引数を書き、Definitionsでテンプレを書く」運用がそのまま動きます。必要なら、区切り文字 | を別の記号に変えるのも簡単で、ParseDefId の Split を差し替えるだけです。
+これを入れれば、
+Mapping → Definitions への引数付きテンプレ呼び出しが自然なVBA関数スタイルになります。
+
+⸻
+
+ご希望あれば、この形式で引数名を任意に書ける（例：{部署コード}, {prefix}）拡張にもできます。
+要りますか？
