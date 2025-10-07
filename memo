@@ -1,10 +1,46 @@
-ここでコンパイルエラー
-Erase Map_No: Erase Map_OutCols: Erase Map_DataType
-    Erase Map_Key: Erase Map_Mode: Erase Map_Def
-    Erase Map_IsKey: Erase Map_TblNames
-    Erase Map_SrcCols
+了解、ここはコンパイル時に「配列が必要」と怒られているのが原因です。
+Erase は動的/固定配列かVariantにしか使えません。安全に消すには、配列を宣言しているモジュール側で一括リセット関数を用意し、そこから呼ぶのが確実です。
+
+修正ポイント（最短）
+	1.	modGlobals（または Map_* が宣言されているモジュール）に、配列リセット用の公開 Sub を追加
+
+'=== Map_* 配列を一括リセット ===
+Public Sub ResetMappingArrays()
+    On Error Resume Next
+    If IsArrayInitialized(Map_No) Then Erase Map_No
+    If IsArrayInitialized(Map_OutCols) Then Erase Map_OutCols
+    If IsArrayInitialized(Map_DataType) Then Erase Map_DataType
+    If IsArrayInitialized(Map_Key) Then Erase Map_Key
+    If IsArrayInitialized(Map_Mode) Then Erase Map_Mode
+    If IsArrayInitialized(Map_Def) Then Erase Map_Def
+    If IsArrayInitialized(Map_IsKey) Then Erase Map_IsKey
+    If IsArrayInitialized(Map_TblNames) Then Erase Map_TblNames
+    If IsArrayInitialized(Map_SrcCols) Then Erase Map_SrcCols
+    On Error GoTo 0
+End Sub
+
+※ 既に IsArrayInitialized(ByRef arr As Variant) As Boolean が modGlobals にあるはずなので、それを使っています（無ければ上記と一緒に追加してください）。
+
+	2.	modProcess の ClearData 内で、問題の Erase Map_... の行を全部削除して、代わりに1行だけ呼び出しに置き換え
+
+' （置き換え前）
+'Erase Map_No: Erase Map_OutCols: Erase Map_DataType
+'Erase Map_Key: Erase Map_Mode: Erase Map_Def
+'Erase Map_IsKey: Erase Map_TblNames
+'Erase Map_SrcCols
+
+' （置き換え後）
+ResetMappingArrays
+
+これで コンパイルエラーは解消します。
+理由は、Erase のコンパイル判定が「そのスコープで配列として宣言されているか」を見るためで、呼び出し元で名前衝突や型差異があるとコケやすいからです。配列を宣言している側に消す処理を寄せるのがいちばん堅いです。
+
+⸻
+
+必要なら、この ResetMappingArrays を modMappingHelper に置く形でもOKですが、宣言元と同じモジュールに置くのが最も安全です。
 
 
+✳︎✳︎✳︎✳︎✳︎✳︎✳︎✳︎
 
 
 
