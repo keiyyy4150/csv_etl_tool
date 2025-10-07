@@ -1,3 +1,13 @@
+ここでコンパイルエラー
+Erase Map_No: Erase Map_OutCols: Erase Map_DataType
+    Erase Map_Key: Erase Map_Mode: Erase Map_Def
+    Erase Map_IsKey: Erase Map_TblNames
+    Erase Map_SrcCols
+
+
+
+
+
 了解しました。いただいたコードと仕様を踏まえて、3点それぞれ“原因 → 直し方（具体的なパッチ案）”でまとめます。
 （ここではそのまま適用できる置換コードを提示します。質問なしで一気にいきます。）
 
