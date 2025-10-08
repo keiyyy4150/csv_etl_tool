@@ -1,40 +1,89 @@
-はい、その書き方（{テーブル名.カラム名}+{テーブル名.カラム名}+...）で概ね正しいです。
-実際、modJoinAndEval モジュールには四則演算を安全に評価する SafeEval 関数が定義されており、Definitions シートで定義した式は最終的にこの関数で数値演算される仕組みになっています ￼。
+原因はほぼ次のいずれかです。対処をそのまま入れてください。
 
 ⸻
 
-✅ 正しい記述例
+よくある原因と即解
 
-Definitionsシートの「ロジック」列に次のように記述すればOKです：
+1) 「ロジック」を複数行に分けて書いている
 
-{pcm_t_景表法遵法チェック結果_一般懸賞.一般懸賞1_6}
-+{pcm_t_景表法遵法チェック結果_一般懸賞.一般懸賞2_6}
-+{pcm_t_景表法遵法チェック結果_一般懸賞.一般懸賞3_6}
-+{pcm_t_景表法遵法チェック結果_総付景品.総付景品1_4}
-+{pcm_t_景表法遵法チェック結果_総付景品.総付景品2_4}
-+{pcm_t_景表法遵法チェック結果_総付景品.総付景品3_4}
+数式は1行ずつ評価→結果を連結し、最後に数値型に整形します。
+複数行に分けると acc = "100" & vbLf & "50" のようになり、数値ではないと判定→0 になります。 ￼  ￼
 
-	•	各 {} はトークンとして認識され、EvaluateExpr 関数内で該当セルの値に置き換えられます ￼。
-	•	その後、SafeEval によって演算子 + が解釈され、合計値が求められます。
-	•	空欄（ブランク）の場合は無視され、IsNumeric 判定後に安全に処理されます ￼。
+✅ 対処：必ず1行で書いてください。
+例：
 
-⸻
+{A.値1}+{A.値2}+{B.値3}
 
-⚠ 注意点
-	1.	データ型
-	•	合計を取るカラムは、Mappingシートで「データ型」を NUMBER に設定しておく必要があります。
-	•	文字列型 (TEXT) のままだと連結扱いになります。
-	2.	空白や非数値の扱い
-	•	SafeEval は IsNumeric 判定で空白や文字列をスキップするため、非数値が混じっても計算エラーにはなりませんが、結果が 0 になる可能性があります。
-	3.	定義IDの指定
-	•	Mappingシートの「定義ID」にこのロジックを登録したID（例：sum_一般懸賞総額）を指定してください。
+
 
 ⸻
 
-✅ まとめ
-	•	書式は {テーブル.カラム}+{テーブル.カラム}+... で正しい。
-	•	Definitionsシートでは改行せず1行でもOK（複数行に分けても vbLf で連結される仕様）。
-	•	型はNUMBERを指定。
-	•	空白や文字列も安全に無視される。
+2) 元データが 全角数字／カンマ／通貨・%付き になっている
 
-この構成で「Definitions参照に失敗しました」エラーが出る場合は、定義IDの綴りとDefinitionsシートの「定義ID／行No／ロジック」列の見出しが正確に一致しているかを確認してください。
+トークン展開後、数値でなければ 0 に置換して式を作っています。
+全角の「１００」「１,０００」「￥100」「50%」などはこの判定に引っかかって 0 になりがちです。 ￼  ￼
+
+✅ 対処（堅牢化パッチ）：数値正規化関数を追加し、置換時にそれを通します。
+modJoinAndEval に以下を追加：
+
+' 全角→半角、カンマ/通貨/％除去、％は小数化して返す
+Private Function ToNumberOrZero(ByVal s As Variant) As String
+    Dim t As String: t = Trim$(CStr(s))
+    If Len(t) = 0 Then ToNumberOrZero = "0": Exit Function
+    On Error Resume Next
+    t = StrConv(t, vbNarrow)      ' 全角英数→半角
+    On Error GoTo 0
+    t = Replace$(t, ",", "")
+    t = Replace$(t, "￥", ""): t = Replace$(t, "¥", "")
+    t = Replace$(t, "％", "%")
+    If Right$(t, 1) = "%" Then
+        t = Left$(t, Len(t) - 1)
+        If IsNumeric(t) Then
+            ToNumberOrZero = CStr(CDbl(t) / 100#)
+        Else
+            ToNumberOrZero = "0"
+        End If
+        Exit Function
+    End If
+    If IsNumeric(t) Then
+        ToNumberOrZero = CStr(CDbl(t))
+    Else
+        ToNumberOrZero = "0"
+    End If
+End Function
+
+そして 2か所を書き換え：
+	•	ReplaceTokensWithRaw のトークン置換部
+
+valStr = ResolveTokenRaw(token, baseTbl, baseRow, myKey)
+valStr = ToNumberOrZero(valStr)    ' ← これに変更
+
+（従来の If Not IsNumeric(valStr) Then valStr = "0" を削除） ￼
+
+	•	ReplaceTokensProcessedAsNumber のトークン置換部
+
+valStr = ResolveTokenProcessed(token, baseTbl, baseRow, myKey, outColIndex)
+valStr = ToNumberOrZero(valStr)    ' ← これに変更
+
+（従来の If Not IsNumeric(valStr) Then valStr = "0" を削除） ￼
+
+これで「１００」「1,000」「￥100」「50%」等でも 正しく数値化→合計 されます。
+なお演算は SafeEval が実施（+,-,*,/ と括弧対応）です。 ￼
+
+⸻
+
+3) モード/データ型の設定ミス
+	•	Mapping のその行の モード = EXPR にしてください（EXPRで EvaluateExpr が動く）。 ￼
+	•	データ型 = NUMBER を指定。最終整形で整数化します（空なら空、数値でなければ0）。 ￼
+
+⸻
+
+これでOKになる記述例（1行）
+
+{pcm_t_景表法遵法チェック結果_一般懸賞.一般懸賞1_6}+{pcm_t_景表法遵法チェック結果_一般懸賞.一般懸賞2_6}+{pcm_t_景表法遵法チェック結果_一般懸賞.一般懸賞3_6}+{pcm_t_景表法遵法チェック結果_総付景品.総付景品1_4}+{pcm_t_景表法遵法チェック結果_総付景品.総付景品2_4}+{pcm_t_景表法遵法チェック結果_総付景品.総付景品3_4}
+
+	•	1行で書く
+	•	モード=EXPR／データ型=NUMBER
+	•	上記パッチ適用で、元値が「100」「５０」「1,000」「50%」「￥100」などでも 正しく合算 されます。
+
+もしまだ 0 になる場合は、その行の評価途中で何が入っているかを expr ログ出力（EvaluateExpr の SafeEval(expr) の直前で WriteLog "DEBUG","EXPR=" & expr など）すると、どのトークンが 0 化されているかすぐ掴めます。 ￼
