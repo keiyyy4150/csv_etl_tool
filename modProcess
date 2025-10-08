@@ -18,6 +18,18 @@ Private Sub ResetMasterSize(masterLo As ListObject)
 End Sub
 
 
+'=== 高速クリア：テーブルのデータ部を空に（列構成は維持） ===
+Private Sub FastClearTable(lo As ListObject)
+    If lo Is Nothing Then Exit Sub
+    If lo.DataBodyRange Is Nothing Then
+        ' 既に0行
+        Exit Sub
+    End If
+    ' 行がある場合は全部削除（列は温存）
+    lo.DataBodyRange.Delete xlShiftUp
+End Sub
+
+
 '==============================
 ' パイプライン切替（Main / List）
 '==============================
@@ -62,12 +74,16 @@ End Sub
 '==============================
 ' Import：CSV読込→キー索引→JOIN（無加工）→Master貼付
 '==============================
-Public Sub ImportFiles()
+Public Sub ImportFiles(pipeline)
     On Error GoTo EH
     Dim tStart As Date: tStart = Now
     
     If Len(CurrentEncodingMode) = 0 Then CurrentEncodingMode = "AUTO"
-    If Len(CurrentMappingTableName) = 0 Then UsePipelineMain
+    If pipeline = "Main" Then
+        UsePipelineMain
+    ElseIf pipeline = "List" Then
+        UsePipelineList
+    End If
     
     Dim ok As Boolean
     ok = ReadMappingFromTableName(CurrentMappingTableName)
@@ -113,14 +129,20 @@ End Sub
 '==============================
 ' Process：加工適用 → Masterへ
 '==============================
-Public Sub ProcessData()
+Public Sub ProcessData(pipeline)
     On Error GoTo EH
     Dim tStart As Date: tStart = Now
     If Not HasRaw Then
         MsgBox "先に『ファイルインポート』を実行してください。", vbExclamation
         Exit Sub
     End If
-    If Len(CurrentMappingTableName) = 0 Then UsePipelineMain
+    
+    If Len(CurrentEncodingMode) = 0 Then CurrentEncodingMode = "AUTO"
+    If pipeline = "Main" Then
+        UsePipelineMain
+    ElseIf pipeline = "List" Then
+        UsePipelineList
+    End If
     
     Dim ok As Boolean
     ok = ReadMappingFromTableName(CurrentMappingTableName)
@@ -155,72 +177,42 @@ End Sub
 '==============================
 Public Sub ClearData()
     Dim prevCalc As XlCalculation
-    Dim prevUpd As Boolean, prevEvt As Boolean, prevDisp As Boolean
-    Dim t0 As Double: t0 = Timer
-
-    If Len(CurrentMasterTableName) = 0 Then UsePipelineMain
-
-    ' 高速化設定の退避
-    On Error Resume Next
-    prevUpd = Application.ScreenUpdating
-    prevEvt = Application.EnableEvents
-    prevDisp = Application.DisplayAlerts
+    Dim prevEvt As Boolean, prevUpd As Boolean
     prevCalc = Application.Calculation
-    Application.ScreenUpdating = False
-    Application.EnableEvents = False
-    Application.DisplayAlerts = False
+    prevEvt = Application.EnableEvents
+    prevUpd = Application.ScreenUpdating
     Application.Calculation = xlCalculationManual
-    On Error GoTo 0
+    Application.EnableEvents = False
+    Application.ScreenUpdating = False
 
-    On Error GoTo EH
+    On Error GoTo FIN
+
     Dim lo As ListObject
-    Set lo = GetListObjectByName(CurrentMasterTableName)
-    If Not lo Is Nothing Then
-        ' フィルタ解除
-        On Error Resume Next
-        If Not lo.AutoFilter Is Nothing Then lo.AutoFilter.ShowAllData
-        On Error GoTo 0
 
-        ' ←ここがポイント：行を「削除」せず、既定サイズに「リサイズ」して中身だけ空にする
-        ResetMasterSize lo   ' B4 の値（空なら 20000 行）に合わせてリサイズ＆ClearContents
-    End If
+    Set lo = GetListObjectByName("Master_Main")
+    If Not lo Is Nothing Then FastClearTable lo
 
-    ' 中間データの解放
-    HasRaw = False
-    IsProcessed = False
+    Set lo = GetListObjectByName("Master_List")
+    If Not lo Is Nothing Then FastClearTable lo
 
+    ' 中間データのクリア
     On Error Resume Next
-    If (Not Not RawJoined) <> 0 Then Erase RawJoined
-    If (Not Not m_baseRowIdx) <> 0 Then Erase m_baseRowIdx
-    On Error GoTo 0
-
-    m_baseTblName = ""
     Set TableData = Nothing
     Set KeyIndexSingle = Nothing
     Set KeyIndexMulti = Nothing
-
-    WriteLog "INFO", "ClearData: cleared in " & Format(Timer - t0, "0.00") & "s"
-DONE:
-    ' 設定を戻す
-    On Error Resume Next
-    Application.ScreenUpdating = prevUpd
-    Application.EnableEvents = prevEvt
-    Application.DisplayAlerts = prevDisp
-    Application.Calculation = prevCalc
+    Erase Map_OutCols: Erase Map_DataType
+    Erase Map_IsKey: Erase Map_Mode: Erase Map_Def
+    Erase Map_IsKey: Erase Map_TblNames
+    Erase Map_SrcCols
     On Error GoTo 0
 
-    MsgBox "初期化しました。", vbInformation
-    Exit Sub
+    WriteLog "INFO", "ClearData: done (fast)"
+    MsgBox "データクリアを実行しました。"
 
-EH:
-    On Error Resume Next
-    Application.ScreenUpdating = prevUpd
-    Application.EnableEvents = prevEvt
-    Application.DisplayAlerts = prevDisp
+FIN:
     Application.Calculation = prevCalc
-    On Error GoTo 0
-    WriteLog "ERROR", "ClearData error: " & Err.Number & " " & Err.Description
-    MsgBox "ClearDataでエラー: " & Err.Description, vbCritical
+    Application.EnableEvents = prevEvt
+    Application.ScreenUpdating = prevUpd
 End Sub
 
 
