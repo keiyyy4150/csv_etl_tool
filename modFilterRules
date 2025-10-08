@@ -282,4 +282,3 @@ Private Function CompareByOp(a As Variant, op As String, b As Variant) As Boolea
         Case Else:  CompareByOp = False
     End Select
 End Function
-
