@@ -1,89 +1,196 @@
-原因はほぼ次のいずれかです。対処をそのまま入れてください。
+原因は「トークン {テーブル.列} が解決できず、すべて 0 に落ちている」可能性が極めて高いです。
+（= 置換時点で空/非数値 → 0 に正規化 → 0+0+0…）
+
+下の順に “そのまま貼るだけ” の最小パッチ＋チェックで一気に切り分け＆解決できます。
 
 ⸻
 
-よくある原因と即解
+1) 即時デバッグ：どのトークンが解決失敗か出す
 
-1) 「ロジック」を複数行に分けて書いている
+modJoinAndEval の トークン置換部にログを足してください（Raw/Processed の両方）。
+※ すでに ToNumberOrZero を入れている前提
 
-数式は1行ずつ評価→結果を連結し、最後に数値型に整形します。
-複数行に分けると acc = "100" & vbLf & "50" のようになり、数値ではないと判定→0 になります。 ￼  ￼
+' --- 置換部（Raw用）: ReplaceTokensWithRaw 内のトークン1個ごとに ---
+Dim rawVal As String, numVal As String
+rawVal = ResolveTokenRaw(token, baseTbl, baseRow, myKey)
+If Len(rawVal) = 0 Then
+    WriteLog "WARN", "TokenNotResolved(RAW): token=" & token & " baseTbl=" & baseTbl & " row=" & baseRow & " key=" & myKey
+End If
+numVal = ToNumberOrZero(rawVal)
+WriteLog "DEBUG", "Token(RAW): " & token & " -> raw='" & rawVal & "' -> num=" & numVal
+expr = Replace(expr, "{" & token & "}", numVal)
 
-✅ 対処：必ず1行で書いてください。
-例：
+' --- 置換部（Processed用）: ReplaceTokensProcessedAsNumber も同様に ---
+Dim pVal As String, pNum As String
+pVal = ResolveTokenProcessed(token, baseTbl, baseRow, myKey, outColIndex)
+If Len(pVal) = 0 Then
+    WriteLog "WARN", "TokenNotResolved(PROC): token=" & token & " baseTbl=" & baseTbl & " row=" & baseRow & " key=" & myKey
+End If
+pNum = ToNumberOrZero(pVal)
+WriteLog "DEBUG", "Token(PROC): " & token & " -> raw='" & pVal & "' -> num=" & pNum
+expr = Replace(expr, "{" & token & "}", pNum)
 
-{A.値1}+{A.値2}+{B.値3}
-
-
+これで「どの {テーブル.列} が空になっているか」が一撃で分かります。
 
 ⸻
 
-2) 元データが 全角数字／カンマ／通貨・%付き になっている
+2) よくある“解決失敗”の根本対策（貼るだけ耐性UP）
 
-トークン展開後、数値でなければ 0 に置換して式を作っています。
-全角の「１００」「１,０００」「￥100」「50%」などはこの判定に引っかかって 0 になりがちです。 ￼  ￼
+(A) 名前のゆらぎを吸収（全角/半角・前後スペース・大文字小文字）
 
-✅ 対処（堅牢化パッチ）：数値正規化関数を追加し、置換時にそれを通します。
-modJoinAndEval に以下を追加：
+トークン解決時とインポート直後のヘッダ名・テーブル名を正規化します。
 
-' 全角→半角、カンマ/通貨/％除去、％は小数化して返す
-Private Function ToNumberOrZero(ByVal s As Variant) As String
-    Dim t As String: t = Trim$(CStr(s))
-    If Len(t) = 0 Then ToNumberOrZero = "0": Exit Function
+2-1. 共通正規化ヘルパ（追加）
+
+Private Function NormalizeName(ByVal s As String) As String
+    Dim t As String: t = Trim$(s)
+    If Len(t) = 0 Then NormalizeName = "": Exit Function
     On Error Resume Next
-    t = StrConv(t, vbNarrow)      ' 全角英数→半角
+    t = StrConv(t, vbNarrow) ' 全角英数→半角
     On Error GoTo 0
-    t = Replace$(t, ",", "")
-    t = Replace$(t, "￥", ""): t = Replace$(t, "¥", "")
-    t = Replace$(t, "％", "%")
-    If Right$(t, 1) = "%" Then
-        t = Left$(t, Len(t) - 1)
-        If IsNumeric(t) Then
-            ToNumberOrZero = CStr(CDbl(t) / 100#)
-        Else
-            ToNumberOrZero = "0"
-        End If
-        Exit Function
-    End If
-    If IsNumeric(t) Then
-        ToNumberOrZero = CStr(CDbl(t))
-    Else
-        ToNumberOrZero = "0"
-    End If
+    ' 全角スペースを半角に
+    t = Replace$(t, ChrW(&H3000), " ")
+    ' 連続空白を1つに（任意）
+    Do While InStr(t, "  ") > 0: t = Replace$(t, "  ", " "): Loop
+    NormalizeName = LCase$(t) ' 大文字小文字を無視
 End Function
 
-そして 2か所を書き換え：
-	•	ReplaceTokensWithRaw のトークン置換部
+2-2. インポート後にヘッダ索引を作る（各テーブルごと）
 
-valStr = ResolveTokenRaw(token, baseTbl, baseRow, myKey)
-valStr = ToNumberOrZero(valStr)    ' ← これに変更
+modIO（またはテーブル格納モジュール）で、読み込んだ2次元配列 TableData(tableName) に対して、ヘッダ名→列インデックスの辞書を作ってキャッシュします。
 
-（従来の If Not IsNumeric(valStr) Then valStr = "0" を削除） ￼
+' import完了後に一回作る想定
+Public HeaderIndexCache As Object ' Dict: normTable -> Dict(nomCol -> idx)
 
-	•	ReplaceTokensProcessedAsNumber のトークン置換部
+Public Sub BuildHeaderIndexCache()
+    Dim t As Variant, arr As Variant, i As Long, n As Long, head As String
+    Set HeaderIndexCache = CreateObject("Scripting.Dictionary")
+    For Each t In TableData.Keys
+        arr = TableData(t)
+        If IsArray(arr) Then
+            Dim d As Object: Set d = CreateObject("Scripting.Dictionary")
+            ' 1行目ヘッダ
+            n = UBound(arr, 2)
+            For i = 1 To n
+                head = NormalizeName(CStr(arr(1, i)))
+                If Len(head) > 0 Then d(head) = i
+            Next
+            HeaderIndexCache(NormalizeName(CStr(t))) = d
+        End If
+    Next
+End Sub
 
-valStr = ResolveTokenProcessed(token, baseTbl, baseRow, myKey, outColIndex)
-valStr = ToNumberOrZero(valStr)    ' ← これに変更
+これを インポート直後（LoadAllCsv 成功後）に呼んでください。
+例：If LoadAllCsv(...) Then BuildHeaderIndexCache
 
-（従来の If Not IsNumeric(valStr) Then valStr = "0" を削除） ￼
+2-3. トークン解決で正規化＆キャッシュ利用（重要）
 
-これで「１００」「1,000」「￥100」「50%」等でも 正しく数値化→合計 されます。
-なお演算は SafeEval が実施（+,-,*,/ と括弧対応）です。 ￼
+' {table.col} を Raw で引く
+Private Function ResolveTokenRaw(token As String, baseTbl As String, baseRow As Long, myKey As String) As String
+    ' token: "テーブル.列"
+    Dim p As Long, t As String, c As String, nt As String, nc As String
+    p = InStr(token, ".")
+    If p = 0 Then Exit Function
+    t = Left$(token, p - 1)
+    c = Mid$(token, p + 1)
+
+    nt = NormalizeName(t)
+    nc = NormalizeName(c)
+
+    ' テーブル存在確認
+    If Not TableData.Exists(t) And Not TableData.Exists(nt) Then
+        ' キーが大小区別で保存されている可能性 → Linear検索（最終手段）
+        Dim k As Variant
+        For Each k In TableData.Keys
+            If NormalizeName(CStr(k)) = nt Then t = CStr(k): Exit For
+        Next
+    End If
+
+    Dim arr As Variant
+    If TableData.Exists(t) Then
+        arr = TableData(t)
+    ElseIf TableData.Exists(nt) Then
+        arr = TableData(nt)
+        t = nt
+    Else
+        Exit Function
+    End If
+
+    ' ヘッダ辞書から列idxを引く
+    Dim d As Object
+    If HeaderIndexCache Is Nothing Then Exit Function
+    If Not HeaderIndexCache.Exists(NormalizeName(t)) Then Exit Function
+    Set d = HeaderIndexCache(NormalizeName(t))
+    If Not d.Exists(nc) Then
+        ' 列名に不可視文字が含まれている場合の救済（末尾/先頭の不可視）
+        Dim kk As Variant
+        For Each kk In d.Keys
+            If Replace$(kk, vbTab, "") = Replace$(nc, vbTab, "") Then
+                nc = kk: Exit For
+            End If
+        Next
+        If Not d.Exists(nc) Then Exit Function
+    End If
+
+    Dim colIdx As Long: colIdx = d(nc)
+
+    ' baseRow は「今処理中ベーステーブルの行」。他テーブルのレコード参照なら JOIN 側で別解決が必要ですが
+    ' ここは「同一行ベース」の列参照前提。必要なら既存のJOIN経由を呼ぶように調整してください。
+    ResolveTokenRaw = CStr(arr(baseRow, colIdx))
+End Function
+
+※ 上は “同じ表の同じ行” を参照するケースの素直版です。
+別テーブルのキー結合参照がありえる場合は、あなたの既存 ResolveTokenRaw の JOIN ロジックを残し、テーブル名/列名の正規化部分だけ差し込むのが安全です。
 
 ⸻
 
-3) モード/データ型の設定ミス
-	•	Mapping のその行の モード = EXPR にしてください（EXPRで EvaluateExpr が動く）。 ￼
-	•	データ型 = NUMBER を指定。最終整形で整数化します（空なら空、数値でなければ0）。 ￼
+3) “合計式”の記述チェック（念のため）
+	•	Definitions のロジックは1行で：
+
+{A.値1}+{A.値2}+{B.値3}+{C.値4}
+
+
+	•	Mapping：その行の
+	•	モード = EXPR
+	•	データ型 = NUMBER
+	•	ToNumberOrZero 済み（全角数字・カンマ・￥・% を吸収）
 
 ⸻
 
-これでOKになる記述例（1行）
+4) すぐ使えるテストマクロ（1行だけ検証）
 
-{pcm_t_景表法遵法チェック結果_一般懸賞.一般懸賞1_6}+{pcm_t_景表法遵法チェック結果_一般懸賞.一般懸賞2_6}+{pcm_t_景表法遵法チェック結果_一般懸賞.一般懸賞3_6}+{pcm_t_景表法遵法チェック結果_総付景品.総付景品1_4}+{pcm_t_景表法遵法チェック結果_総付景品.総付景品2_4}+{pcm_t_景表法遵法チェック結果_総付景品.総付景品3_4}
+このマクロで、任意の行について式の置換結果を見れます。
+Immediate に expr を出すので、どこで 0 になったかが一目で分かります。
 
-	•	1行で書く
-	•	モード=EXPR／データ型=NUMBER
-	•	上記パッチ適用で、元値が「100」「５０」「1,000」「50%」「￥100」などでも 正しく合算 されます。
+Public Sub TestExprAt()
+    Dim baseTbl As String: baseTbl = "pcm_t_景表法遵法チェック結果_一般懸賞" ' ←適宜
+    Dim rowNo As Long: rowNo = 2          ' ←データ行
+    Dim key As String: key = ""           ' ←必要なら
+    Dim expr As String
 
-もしまだ 0 になる場合は、その行の評価途中で何が入っているかを expr ログ出力（EvaluateExpr の SafeEval(expr) の直前で WriteLog "DEBUG","EXPR=" & expr など）すると、どのトークンが 0 化されているかすぐ掴めます。 ￼
+    expr = "{pcm_t_景表法遵法チェック結果_一般懸賞.一般懸賞1_6}+{pcm_t_景表法遵法チェック結果_一般懸賞.一般懸賞2_6}"
+
+    ' 下はあなたの関数名に合わせて
+    expr = ReplaceTokensWithRaw(expr, baseTbl, rowNo, key)
+    Debug.Print "ReplacedExpr=", expr
+    Debug.Print "Eval=", SafeEval(expr)
+End Sub
+
+
+⸻
+
+5) “全部0”の主な元凶と対処まとめ
+
+元凶	典型	対処
+テーブル名/列名に全角/半角や余分スペース	総付景品1_4 と 総付景品１_4	NormalizeName でそろえる
+CSVヘッダに不可視文字混入	末尾にタブ/改行	NormalizeName＋HeaderIndexCache で救済
+大文字小文字の不一致	Table_A vs table_a	すべて小文字化して比較
+参照がProcessed側を向いて空に	先に空で上書き	Raw/Proc のどちらを使うべきか確認
+値が全角数字・1,000・￥100・50%	IsNumeric=False → 0	ToNumberOrZero で正規化
+
+
+⸻
+
+まずは #1 のログを入れて再実行してください。
+ログに TokenNotResolved が並ぶ → #2 の正規化＆ヘッダ索引キャッシュを入れる、でほぼ解決します。
+その上で ReplacedExpr= が 100+50 のように見えれば、評価結果は 150 になります。
