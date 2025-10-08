@@ -8,33 +8,73 @@ Option Explicit
 '   - 行No昇順で「ロジック」を vbLf 連結して返却
 '=========================================================
 
-Public Function BuildDefinitionFromSheet(defId As String, Optional definitionsListName As String = "Definitions") As String
-    Dim lo As ListObject
-    Set lo = GetListObjectByNameEx(definitionsListName)
-    If lo Is Nothing Then Err.Raise vbObjectError + 3401, , "Definitionsテーブル(" & definitionsListName & ")が見つかりません。"
-    If lo.DataBodyRange Is Nothing Then BuildDefinitionFromSheet = "": Exit Function
+Public Function BuildDefinitionFromSheet(defIdRaw As String, Optional definitionsListName As String = "Definitions") As String
+    On Error GoTo ERR_HANDLER
 
-    ' ヘッダー列位置
-    Dim cId As Long, cVer As Long, cLine As Long, cLogic As Long
-    cId = FindHeaderIndexEx(lo, "定義ID")
-    cVer = FindHeaderIndexEx(lo, "バージョン")    ' 任意
-    cLine = FindHeaderIndexEx(lo, "行No")
-    cLogic = FindHeaderIndexEx(lo, "ロジック")
-    If cId = 0 Or cLine = 0 Or cLogic = 0 Then
-        Err.Raise vbObjectError + 3402, , "Definitionsの見出しは『定義ID／行No／ロジック（＋任意でバージョン）』が必要です。"
+    Dim defName As String
+    Dim params As Object
+    Dim logicTemplate As String
+    Dim expanded As String
+
+    ' --- 1. 定義名と引数を抽出 ---
+    Set params = CreateObject("Scripting.Dictionary")
+    ParseDefinitionCall defIdRaw, defName, params
+
+    If Len(defName) = 0 Then
+        BuildDefinitionFromSheet = ""
+        Exit Function
     End If
 
-    ' 最大バージョン
+    ' --- 2. Definitionsシートからテンプレート取得 ---
+    logicTemplate = BuildDefinitionTemplateFromSheet(defName, definitionsListName)
+    If Len(logicTemplate) = 0 Then
+        Err.Raise vbObjectError + 9001, , "Definitions参照に失敗しました: 定義ID=[" & defName & "]"
+    End If
+
+    ' --- 3. テンプレ内の {paramX} を展開 ---
+    expanded = ExpandNamedParams(logicTemplate, params)
+
+    BuildDefinitionFromSheet = expanded
+    Exit Function
+
+ERR_HANDLER:
+    MsgBox "BuildDefinitionFromSheet エラー: " & Err.Description, vbCritical
+    BuildDefinitionFromSheet = ""
+End Function
+
+'=========================================================
+' Definitionsシートから指定定義名のロジック（テンプレ）を取得
+'=========================================================
+Private Function BuildDefinitionTemplateFromSheet(defName As String, Optional definitionsListName As String = "Definitions") As String
+    Dim lo As ListObject
+    Set lo = GetListObjectByNameEx(definitionsListName)
+    If lo Is Nothing Then
+        Err.Raise vbObjectError + 3401, , "Definitionsテーブル(" & definitionsListName & ")が見つかりません。"
+    End If
+    If lo.DataBodyRange Is Nothing Then BuildDefinitionTemplateFromSheet = "": Exit Function
+
+    ' ヘッダー列取得
+    Dim cId As Long, cVer As Long, cLine As Long, cLogic As Long
+    cId = FindHeaderIndexEx(lo, "定義ID")
+    cVer = FindHeaderIndexEx(lo, "バージョン")
+    cLine = FindHeaderIndexEx(lo, "行No")
+    cLogic = FindHeaderIndexEx(lo, "ロジック")
+
+    If cId = 0 Or cLine = 0 Or cLogic = 0 Then
+        Err.Raise vbObjectError + 3402, , "Definitionsの見出しが不正です。定義ID／行No／ロジック が必要です。"
+    End If
+
+    ' 最大バージョンを取得
     Dim maxVer As Long
-    maxVer = MaxVersionForIdEx(lo, cId, cVer, defId)
+    maxVer = MaxVersionForIdEx(lo, cId, cVer, defName)
 
-    ' 行No→ロジック の一時格納
+    ' 行No昇順にロジックを結合
     Dim dict As Object: Set dict = CreateObject("Scripting.Dictionary")
-
     Dim r As Range, idv As String, vv As Variant, lineNo As Long, logicText As String
+
     For Each r In lo.DataBodyRange.rows
         idv = CStr(r.Cells(1, cId).Value)
-        If StrComp(idv, defId, vbTextCompare) = 0 Then
+        If StrComp(idv, defName, vbTextCompare) = 0 Then
             If cVer > 0 Then
                 vv = r.Cells(1, cVer).Value
                 If IsNumeric(vv) Then
@@ -51,14 +91,14 @@ Public Function BuildDefinitionFromSheet(defId As String, Optional definitionsLi
             logicText = CStr(r.Cells(1, cLogic).Value)
             If Len(Trim$(logicText)) = 0 Then GoTo CONT_ROW
 
-            dict(lineNo) = logicText   ' 同じ行Noが重複していたら後勝ち
+            dict(lineNo) = logicText
         End If
 CONT_ROW:
     Next
 
-    If dict.Count = 0 Then BuildDefinitionFromSheet = "": Exit Function
+    If dict.Count = 0 Then BuildDefinitionTemplateFromSheet = "": Exit Function
 
-    ' 昇順でJoin
+    ' 行No昇順で連結
     Dim keys() As Variant, i As Long, j As Long, tmp As Variant, acc As String
     keys = dict.keys
     For i = LBound(keys) To UBound(keys) - 1
@@ -69,17 +109,54 @@ CONT_ROW:
         Next
     Next
 
-    acc = ""
     For i = LBound(keys) To UBound(keys)
-        If Len(acc) = 0 Then
-            acc = dict(keys(i))
-        Else
-            acc = acc & vbLf & dict(keys(i))
-        End If
+        If Len(acc) > 0 Then acc = acc & vbLf
+        acc = acc & dict(keys(i))
     Next
 
-    BuildDefinitionFromSheet = acc
+    BuildDefinitionTemplateFromSheet = acc
 End Function
+
+
+'=========================================================
+' 解析:  定義ID(引数1, 引数2, ...) → 定義名と引数Dictionaryに展開
+'=========================================================
+Private Sub ParseDefinitionCall(ByVal src As String, ByRef defName As String, ByRef params As Object)
+    Dim openPos As Long, closePos As Long, argStr As String, parts As Variant, i As Long
+
+    src = Trim$(src)
+    openPos = InStr(src, "(")
+    closePos = InStrRev(src, ")")
+
+    If openPos = 0 Or closePos = 0 Or closePos < openPos Then
+        ' 引数なし
+        defName = src
+        Exit Sub
+    End If
+
+    defName = Trim$(Left$(src, openPos - 1))
+    argStr = Mid$(src, openPos + 1, closePos - openPos - 1)
+
+    If Len(argStr) = 0 Then Exit Sub
+
+    parts = Split(argStr, ",")
+    For i = LBound(parts) To UBound(parts)
+        params("param" & (i + 1)) = Trim$(parts(i))
+    Next i
+End Sub
+
+'=========================================================
+' テンプレ内の {param1}, {param2}, ... を展開
+'=========================================================
+Private Function ExpandNamedParams(ByVal template As String, ByRef params As Object) As String
+    Dim k As Variant, s As String
+    s = template
+    For Each k In params.keys
+        s = Replace$(s, "{" & k & "}", params(k))
+    Next k
+    ExpandNamedParams = s
+End Function
+
 
 '==================== ユーティリティ（このモジュール内限定名） ====================
 
