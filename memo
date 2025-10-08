@@ -1,196 +1,123 @@
-原因は「トークン {テーブル.列} が解決できず、すべて 0 に落ちている」可能性が極めて高いです。
-（= 置換時点で空/非数値 → 0 に正規化 → 0+0+0…）
-
-下の順に “そのまま貼るだけ” の最小パッチ＋チェックで一気に切り分け＆解決できます。
+了解です。コードを踏まえて、いただいた3点の課題に “いまの仕組みに沿った最小修正” で解決する案をまとめました。必要な理由の根拠は該当モジュールの実装箇所を行番号つきで引用します。
 
 ⸻
 
-1) 即時デバッグ：どのトークンが解決失敗か出す
+① 改行ではなくカンマ区切りにしたい
 
-modJoinAndEval の トークン置換部にログを足してください（Raw/Processed の両方）。
-※ すでに ToNumberOrZero を入れている前提
+現状
+Definitions は「行ごとに評価 → 非空だけを vbLf で連結」する実装です（行連結の生成は Definitions → BuildDefinitionTemplateFromSheet、評価時の各行処理は SplitExprToLines と IF 処理で行単位の文字列を返す設計）。そのため、複数行を書くと必ず改行で結合されます。 ￼  ￼  ￼
 
-' --- 置換部（Raw用）: ReplaceTokensWithRaw 内のトークン1個ごとに ---
-Dim rawVal As String, numVal As String
-rawVal = ResolveTokenRaw(token, baseTbl, baseRow, myKey)
-If Len(rawVal) = 0 Then
-    WriteLog "WARN", "TokenNotResolved(RAW): token=" & token & " baseTbl=" & baseTbl & " row=" & baseRow & " key=" & myKey
-End If
-numVal = ToNumberOrZero(rawVal)
-WriteLog "DEBUG", "Token(RAW): " & token & " -> raw='" & rawVal & "' -> num=" & numVal
-expr = Replace(expr, "{" & token & "}", numVal)
+提案（軽量拡張）
+EvaluateExpr の最後で「結合区切り」を差し替えできるようにします。やり方は先頭行にディレクティブを書く方式がシンプルです。
+	•	Definitions の先頭行に
+JOIN(", ")
+と1行だけ置いておき、評価時にこの行を拾って区切り文字を, に変更、以降の行で生成した結果の vbLf を最後に置換します（デフォルトは従来どおり vbLf）。
 
-' --- 置換部（Processed用）: ReplaceTokensProcessedAsNumber も同様に ---
-Dim pVal As String, pNum As String
-pVal = ResolveTokenProcessed(token, baseTbl, baseRow, myKey, outColIndex)
-If Len(pVal) = 0 Then
-    WriteLog "WARN", "TokenNotResolved(PROC): token=" & token & " baseTbl=" & baseTbl & " row=" & baseRow & " key=" & myKey
-End If
-pNum = ToNumberOrZero(pVal)
-WriteLog "DEBUG", "Token(PROC): " & token & " -> raw='" & pVal & "' -> num=" & pNum
-expr = Replace(expr, "{" & token & "}", pNum)
+実装ポイント
+	•	EvaluateExpr（EXPRモードの本体）で
+	1.	SplitExprToLines(def) で得た行の先頭に JOIN( があるか検査
+	2.	あれば区切り = StripQuotes(…) で取り出す
+	3.	以降の行から作った acc の vbLf をその区切りに Replace
+を追加します。
+SplitExprToLines はすでに | も改行扱いにしてくれるので、見た目の管理は従来通りです。 ￼
 
-これで「どの {テーブル.列} が空になっているか」が一撃で分かります。
+使い方（Definitions の例）
 
-⸻
+JOIN(", ")
+IF({pcm_t_キャンペーン.対象カード_プロパー}=1,"プロパー","")
+IF({pcm_t_キャンペーン.対象カード_FC}=1,"FC","")
+IF({pcm_t_キャンペーン.対象カード_海外}=1,"海外（詳細）","")
+IF({pcm_t_キャンペーン.対象カード_詳細}="","",({pcm_t_キャンペーン.対象カード_詳細}))
 
-2) よくある“解決失敗”の根本対策（貼るだけ耐性UP）
-
-(A) 名前のゆらぎを吸収（全角/半角・前後スペース・大文字小文字）
-
-トークン解決時とインポート直後のヘッダ名・テーブル名を正規化します。
-
-2-1. 共通正規化ヘルパ（追加）
-
-Private Function NormalizeName(ByVal s As String) As String
-    Dim t As String: t = Trim$(s)
-    If Len(t) = 0 Then NormalizeName = "": Exit Function
-    On Error Resume Next
-    t = StrConv(t, vbNarrow) ' 全角英数→半角
-    On Error GoTo 0
-    ' 全角スペースを半角に
-    t = Replace$(t, ChrW(&H3000), " ")
-    ' 連続空白を1つに（任意）
-    Do While InStr(t, "  ") > 0: t = Replace$(t, "  ", " "): Loop
-    NormalizeName = LCase$(t) ' 大文字小文字を無視
-End Function
-
-2-2. インポート後にヘッダ索引を作る（各テーブルごと）
-
-modIO（またはテーブル格納モジュール）で、読み込んだ2次元配列 TableData(tableName) に対して、ヘッダ名→列インデックスの辞書を作ってキャッシュします。
-
-' import完了後に一回作る想定
-Public HeaderIndexCache As Object ' Dict: normTable -> Dict(nomCol -> idx)
-
-Public Sub BuildHeaderIndexCache()
-    Dim t As Variant, arr As Variant, i As Long, n As Long, head As String
-    Set HeaderIndexCache = CreateObject("Scripting.Dictionary")
-    For Each t In TableData.Keys
-        arr = TableData(t)
-        If IsArray(arr) Then
-            Dim d As Object: Set d = CreateObject("Scripting.Dictionary")
-            ' 1行目ヘッダ
-            n = UBound(arr, 2)
-            For i = 1 To n
-                head = NormalizeName(CStr(arr(1, i)))
-                If Len(head) > 0 Then d(head) = i
-            Next
-            HeaderIndexCache(NormalizeName(CStr(t))) = d
-        End If
-    Next
-End Sub
-
-これを インポート直後（LoadAllCsv 成功後）に呼んでください。
-例：If LoadAllCsv(...) Then BuildHeaderIndexCache
-
-2-3. トークン解決で正規化＆キャッシュ利用（重要）
-
-' {table.col} を Raw で引く
-Private Function ResolveTokenRaw(token As String, baseTbl As String, baseRow As Long, myKey As String) As String
-    ' token: "テーブル.列"
-    Dim p As Long, t As String, c As String, nt As String, nc As String
-    p = InStr(token, ".")
-    If p = 0 Then Exit Function
-    t = Left$(token, p - 1)
-    c = Mid$(token, p + 1)
-
-    nt = NormalizeName(t)
-    nc = NormalizeName(c)
-
-    ' テーブル存在確認
-    If Not TableData.Exists(t) And Not TableData.Exists(nt) Then
-        ' キーが大小区別で保存されている可能性 → Linear検索（最終手段）
-        Dim k As Variant
-        For Each k In TableData.Keys
-            If NormalizeName(CStr(k)) = nt Then t = CStr(k): Exit For
-        Next
-    End If
-
-    Dim arr As Variant
-    If TableData.Exists(t) Then
-        arr = TableData(t)
-    ElseIf TableData.Exists(nt) Then
-        arr = TableData(nt)
-        t = nt
-    Else
-        Exit Function
-    End If
-
-    ' ヘッダ辞書から列idxを引く
-    Dim d As Object
-    If HeaderIndexCache Is Nothing Then Exit Function
-    If Not HeaderIndexCache.Exists(NormalizeName(t)) Then Exit Function
-    Set d = HeaderIndexCache(NormalizeName(t))
-    If Not d.Exists(nc) Then
-        ' 列名に不可視文字が含まれている場合の救済（末尾/先頭の不可視）
-        Dim kk As Variant
-        For Each kk In d.Keys
-            If Replace$(kk, vbTab, "") = Replace$(nc, vbTab, "") Then
-                nc = kk: Exit For
-            End If
-        Next
-        If Not d.Exists(nc) Then Exit Function
-    End If
-
-    Dim colIdx As Long: colIdx = d(nc)
-
-    ' baseRow は「今処理中ベーステーブルの行」。他テーブルのレコード参照なら JOIN 側で別解決が必要ですが
-    ' ここは「同一行ベース」の列参照前提。必要なら既存のJOIN経由を呼ぶように調整してください。
-    ResolveTokenRaw = CStr(arr(baseRow, colIdx))
-End Function
-
-※ 上は “同じ表の同じ行” を参照するケースの素直版です。
-別テーブルのキー結合参照がありえる場合は、あなたの既存 ResolveTokenRaw の JOIN ロジックを残し、テーブル名/列名の正規化部分だけ差し込むのが安全です。
+→ 出力: プロパー, FC, 海外（詳細）
+（JOIN 行を外せば従来通り改行結合）
 
 ⸻
 
-3) “合計式”の記述チェック（念のため）
-	•	Definitions のロジックは1行で：
+② たし算が 0 になる
 
-{A.値1}+{A.値2}+{B.値3}+{C.値4}
+原因
+式評価で {tbl.col} を数値に置換する関数が値を代入していないため、空文字→0 になっています。
+ReplaceTokensWithRaw / ReplaceTokensProcessedAsNumber の中で、実際にトークン解決する行がコメントアウトされており、valStr が空のまま ToNumberOrZero に渡って 0 になってしまいます。 ￼
 
+該当箇所（抜粋）
 
-	•	Mapping：その行の
-	•	モード = EXPR
-	•	データ型 = NUMBER
-	•	ToNumberOrZero 済み（全角数字・カンマ・￥・% を吸収）
+' If processed Then
+'     valStr = ResolveTokenProcessed(token, baseTbl, baseRow, myKey, outColIndex)
+' Else
+'     valStr = ResolveTokenRaw(token, baseTbl, baseRow, myKey)
+' End If
+s = Left$(s, pos - 1) & ToNumberOrZero(valStr) & Mid$(s, pos2 + 1)
 
-⸻
+（ここで valStr が未設定のまま 0 化される）
 
-4) すぐ使えるテストマクロ（1行だけ検証）
+修正
+上記のコメントアウトを外し、実際に valStr に値を入れてから ToNumberOrZero に渡してください。
+ToNumberOrZero は全角→半角、カンマ・通貨記号除去、％なら小数化までやってくれるので、そのまま四則演算に乗ります。 ￼
 
-このマクロで、任意の行について式の置換結果を見れます。
-Immediate に expr を出すので、どこで 0 になったかが一目で分かります。
+確認ポイント
+EXPR モードでは ApplyTransformSmart が EvaluateExpr(..., processed:=True) を呼びます。processed:=True の場合は「中間加工済み値」のトークン解決（ResolveTokenProcessed）が使われます。 ￼  ￼
 
-Public Sub TestExprAt()
-    Dim baseTbl As String: baseTbl = "pcm_t_景表法遵法チェック結果_一般懸賞" ' ←適宜
-    Dim rowNo As Long: rowNo = 2          ' ←データ行
-    Dim key As String: key = ""           ' ←必要なら
-    Dim expr As String
+Definitions の書き方
+ご提示の式で OK です（修正後は 100 + 50 → 150 を返すはずです）：
 
-    expr = "{pcm_t_景表法遵法チェック結果_一般懸賞.一般懸賞1_6}+{pcm_t_景表法遵法チェック結果_一般懸賞.一般懸賞2_6}"
-
-    ' 下はあなたの関数名に合わせて
-    expr = ReplaceTokensWithRaw(expr, baseTbl, rowNo, key)
-    Debug.Print "ReplacedExpr=", expr
-    Debug.Print "Eval=", SafeEval(expr)
-End Sub
+{pcm_t_景表法遵法チェック結果_一般懸賞.一般懸賞1_6}
++{pcm_t_景表法遵法チェック結果_一般懸賞.一般懸賞2_6}
++{pcm_t_景表法遵法チェック結果_一般懸賞.一般懸賞3_6}
++{pcm_t_景表法遵法チェック結果_総付景品.総付景品1_4}
++{pcm_t_景表法遵法チェック結果_総付景品.総付景品2_4}
++{pcm_t_景表法遵法チェック結果_総付景品.総付景品3_4}
 
 
 ⸻
 
-5) “全部0”の主な元凶と対処まとめ
+③ 「A-1」「aー１」「A#1」を一律で「A-1」に正規化したい
 
-元凶	典型	対処
-テーブル名/列名に全角/半角や余分スペース	総付景品1_4 と 総付景品１_4	NormalizeName でそろえる
-CSVヘッダに不可視文字混入	末尾にタブ/改行	NormalizeName＋HeaderIndexCache で救済
-大文字小文字の不一致	Table_A vs table_a	すべて小文字化して比較
-参照がProcessed側を向いて空に	先に空で上書き	Raw/Proc のどちらを使うべきか確認
-値が全角数字・1,000・￥100・50%	IsNumeric=False → 0	ToNumberOrZero で正規化
+やり方は2通りあります。
 
+A) 最小実装で Definitions に書ける関数を増やす
+
+GetScalarValue は LEFT/RIGHT/MID をすでにサポートしているので、ここに文字列関数を追加します（例：UCASE(s), REPLACE(s, old, new)）。構文パースは既存の SplitArgs を流用できます。 ￼  ￼
+	•	UCASE(expr) → UCase$(NormalizeText(GetScalarValue(expr,...)))
+	•	REPLACE(expr, "ー", "-") のように入れ子で複数回呼べます
+	•	既存の NormalizeText は全角→半角 + Trimまで実施（全角英数は半角化されます） ￼
+
+Definitions 例（推奨）
+
+UCASE(
+  REPLACE(
+    REPLACE(
+      REPLACE({元テーブル.元列}, "ー", "-"),
+      "－", "-"
+    ),
+    "#", "-"
+  )
+)
+
+これで
+	•	全角長音/全角ハイフン系（ー/－ など）→ -
+	•	# → -
+	•	全角英数→半角（NormalizeText）
+	•	アルファベットは大文字化（UCASE）
+となり、"aー１" / "A#1" / "Ａ−１" などが**「A-1」**に揃います。
+
+B) グローバルに効かせる（慎重に）
+
+NormalizeText 自体にハイフン類・# の置換と UCase$ を追加する方法もあります。ただしすべての列の文字列正規化に影響するため、影響範囲が大きいです。ピンポイントで使いたいなら A 案（関数追加） をおすすめします。
 
 ⸻
 
-まずは #1 のログを入れて再実行してください。
-ログに TokenNotResolved が並ぶ → #2 の正規化＆ヘッダ索引キャッシュを入れる、でほぼ解決します。
-その上で ReplacedExpr= が 100+50 のように見えれば、評価結果は 150 になります。
+変更のサマリ（最小パッチ）
+	1.	カンマ区切り
+	•	EvaluateExpr: JOIN("...") ディレクティブ対応を追加し、最終連結 vbLf を指定区切りに置換（デフォルトは従来どおり改行）。
+根拠: EXPR は行分割・連結で設計（SplitExprToLines） ￼
+	2.	加算が 0 になる
+	•	ReplaceTokensWithRaw / ReplaceTokensProcessedAsNumber のコメントアウトを外す（valStr = ResolveToken... を実行）
+	•	ToNumberOrZero が全角やカンマ・％を面倒みるので、そのまま四則演算可能。 ￼
+	3.	「A-1」への正規化
+	•	GetScalarValue に UCASE と REPLACE を追加（SplitArgs 利用で簡単に実装可）。 ￼  ￼
+	•	Definitions 側は入れ子で REPLACE → 最後に UCASE(...)。
+
+⸻
+
+必要なら、上記3点の差分コード（貼り付け用）もこちらで用意します。
