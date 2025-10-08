@@ -1,5 +1,47 @@
 Option Explicit
 
+' 全角→半角、カンマ/通貨/％除去、％は小数化して返す
+Private Function ToNumberOrZero(ByVal s As Variant) As String
+    Dim t As String: t = Trim$(CStr(s))
+    If Len(t) = 0 Then ToNumberOrZero = "0": Exit Function
+    On Error Resume Next
+    t = StrConv(t, vbNarrow)      ' 全角英数→半角
+    On Error GoTo 0
+    t = Replace$(t, ",", "")
+    t = Replace$(t, "￥", ""): t = Replace$(t, "\", "")
+    t = Replace$(t, "％", "%")
+    If Right$(t, 1) = "%" Then
+        t = Left$(t, Len(t) - 1)
+        If IsNumeric(t) Then
+            ToNumberOrZero = CStr(CDbl(t) / 100#)
+        Else
+            ToNumberOrZero = "0"
+        End If
+        Exit Function
+    End If
+    If IsNumeric(t) Then
+        ToNumberOrZero = CStr(CDbl(t))
+    Else
+        ToNumberOrZero = "0"
+    End If
+End Function
+
+' 文字列の正規化：Trim → 可能なら半角化（全角A/1対策）→ Null回避
+Private Function NormalizeText(ByVal s As Variant) As String
+    Dim t As String
+    If IsNull(s) Then
+        NormalizeText = ""
+        Exit Function
+    End If
+    t = CStr(s)
+    t = Trim$(t)
+    On Error Resume Next
+    ' 日本語CSVでありがちな全角英数字混在対策（環境依存だが害はない）
+    t = StrConv(t, vbNarrow)
+    On Error GoTo 0
+    NormalizeText = t
+End Function
+
 '=== 文字列を「ヘッダ用に」正規化（BOM除去＋Trim） ===
 Private Function NormalizeHeader(ByVal s As String) As String
     If Len(s) = 0 Then
@@ -429,8 +471,9 @@ Public Function ReplaceTokensWithRaw(def As String, baseTbl As String, baseRow A
         pos2 = InStr(pos + 1, s, "}")
         If pos2 = 0 Then Exit Do
         token = Mid$(s, pos + 1, pos2 - pos - 1)
-        valStr = ResolveTokenRaw(token, baseTbl, baseRow, myKey)
-        If Not IsNumeric(valStr) Then valStr = "0"
+'        valStr = ResolveTokenRaw(token, baseTbl, baseRow, myKey)
+        valStr = ToNumberOrZero(valStr)
+'        If Not IsNumeric(valStr) Then valStr = "0"
         s = Left$(s, pos - 1) & valStr & Mid$(s, pos2 + 1)
         pos = InStr(pos + Len(valStr), s, "{")
     Loop
@@ -445,8 +488,9 @@ Public Function ReplaceTokensProcessedAsNumber(def As String, baseTbl As String,
         pos2 = InStr(pos + 1, s, "}")
         If pos2 = 0 Then Exit Do
         token = Mid$(s, pos + 1, pos2 - pos - 1)
-        valStr = ResolveTokenProcessed(token, baseTbl, baseRow, myKey, outColIndex)
-        If Not IsNumeric(valStr) Then valStr = "0"
+'        valStr = ResolveTokenProcessed(token, baseTbl, baseRow, myKey, outColIndex)
+        valStr = ToNumberOrZero(valStr)
+'        If Not IsNumeric(valStr) Then valStr = "0"
         s = Left$(s, pos - 1) & valStr & Mid$(s, pos2 + 1)
         pos = InStr(pos + Len(valStr), s, "{")
     Loop
@@ -544,19 +588,137 @@ End Function
 Private Function EvalOneCondition(cond As String, baseTbl As String, baseRow As Long, myKey As String, _
                                   ByVal processed As Boolean, ByVal outColIndex As Long) As Boolean
     Dim p As Long, leftExpr As String, rightExpr As String
+    Dim actual As String, expected As String, u As String
+    cond = Trim$(cond)
+    u = UCase$(cond)
+
+    ' LIKE({..},"A*") 形式
+    If Left$(u, 5) = "LIKE(" And Right$(u, 1) = ")" Then
+        Dim inside As String, args As Collection
+        inside = Mid$(cond, 6, Len(cond) - 6)
+        Set args = SplitArgs(inside)
+        If args.Count = 2 Then
+            actual = GetScalarValue(args(1), baseTbl, baseRow, myKey, processed, outColIndex)
+            expected = StripQuotes(args(2))
+            EvalOneCondition = (actual Like expected)
+            WriteLog "DEBUG", "[COND LIKE] actual='" & actual & "' pattern='" & expected & "' -> " & EvalOneCondition
+            Exit Function
+        End If
+    End If
+
+    ' STARTSWITH/ENDSWITH/CONTAINS
+    If Left$(u, 11) = "STARTSWITH" Or Left$(u, 9) = "ENDSWITH" Or Left$(u, 8) = "CONTAINS" Then
+        Dim fn As String, ins As String, a As Collection
+        fn = Left$(cond, InStr(cond, "(") - 1)
+        ins = Mid$(cond, InStr(cond, "(") + 1, Len(cond) - InStr(cond, "(") - 1)
+        Set a = SplitArgs(ins)
+        If a.Count = 2 Then
+            actual = GetScalarValue(a(1), baseTbl, baseRow, myKey, processed, outColIndex)
+            expected = StripQuotes(a(2))
+            Select Case UCase$(fn)
+                Case "STARTSWITH": EvalOneCondition = (Left$(actual, Len(expected)) = expected)
+                Case "ENDSWITH":   EvalOneCondition = (Right$(actual, Len(expected)) = expected)
+                Case "CONTAINS":   EvalOneCondition = (InStr(1, actual, expected, vbTextCompare) > 0)
+            End Select
+            WriteLog "DEBUG", "[COND " & UCase$(fn) & "] actual='" & actual & "' expected='" & expected & "' -> " & EvalOneCondition
+            Exit Function
+        End If
+    End If
+
+    ' A = B 比較
     p = InStr(cond, "=")
-    If p = 0 Then Exit Function
+    If p = 0 Then
+        EvalOneCondition = False
+        WriteLog "DEBUG", "[COND] no '=' in '" & cond & "'"
+        Exit Function
+    End If
     leftExpr = Trim$(Left$(cond, p - 1))
     rightExpr = Trim$(Mid$(cond, p + 1))
+    actual = GetScalarValue(leftExpr, baseTbl, baseRow, myKey, processed, outColIndex)
+    expected = NormalizeText(StripQuotes(rightExpr))
 
-    Dim expected As String: expected = StripQuotes(rightExpr)
-    Dim actual As String
-    If processed Then
-        actual = ResolveTokenProcessed(Trim$(leftExpr), baseTbl, baseRow, myKey, outColIndex)
-    Else
-        actual = ResolveTokenRaw(Trim$(leftExpr), baseTbl, baseRow, myKey)
-    End If
     EvalOneCondition = (actual = expected)
+    WriteLog "DEBUG", "[COND =] actual='" & actual & "' expected='" & expected & "' -> " & EvalOneCondition
+End Function
+
+Private Function EvalIFALL(argList As String, baseTbl As String, baseRow As Long, myKey As String, _
+                           ByVal processed As Boolean, ByVal outColIndex As Long) As Boolean
+    Dim conds As Collection, i As Long, c As String
+    Set conds = SplitArgs(argList)
+    If conds Is Nothing Or conds.Count = 0 Then
+        EvalIFALL = False
+        Exit Function
+    End If
+
+    EvalIFALL = True
+    For i = 1 To conds.Count
+        c = Trim$(conds(i))
+        If Len(c) = 0 Then
+            ' 空条件はスキップ
+        Else
+            If Not EvalOneCondition(c, baseTbl, baseRow, myKey, processed, outColIndex) Then
+                EvalIFALL = False
+                Exit For
+            End If
+        End If
+    Next i
+End Function
+
+Private Function GetScalarValue(expr As String, baseTbl As String, baseRow As Long, myKey As String, _
+                                ByVal processed As Boolean, ByVal outColIndex As Long) As String
+    Dim u As String: u = UCase$(Trim$(expr))
+    Dim inside As String, a As Collection
+
+    If Left$(u, 5) = "LEFT(" And Right$(u, 1) = ")" Then
+        inside = Mid$(expr, 6, Len(expr) - 6)
+        Set a = SplitArgs(inside)
+        If a.Count = 2 Then
+            Dim s As String, n As Long
+            s = NormalizeText(GetScalarValue(a(1), baseTbl, baseRow, myKey, processed, outColIndex))
+            n = CLng(Val(a(2)))
+            GetScalarValue = Left$(s, n)
+            Exit Function
+        End If
+
+    ElseIf Left$(u, 6) = "RIGHT(" And Right$(u, 1) = ")" Then
+        inside = Mid$(expr, 7, Len(expr) - 7)
+        Set a = SplitArgs(inside)
+        If a.Count = 2 Then
+            Dim s2 As String, n2 As Long
+            s2 = NormalizeText(GetScalarValue(a(1), baseTbl, baseRow, myKey, processed, outColIndex))
+            n2 = CLng(Val(a(2)))
+            GetScalarValue = Right$(s2, n2)
+            Exit Function
+        End If
+
+    ElseIf Left$(u, 4) = "MID(" And Right$(u, 1) = ")" Then
+        inside = Mid$(expr, 5, Len(expr) - 5)
+        Set a = SplitArgs(inside)
+        If a.Count = 3 Then
+            Dim s3 As String, st As Long, ln As Long
+            s3 = NormalizeText(GetScalarValue(a(1), baseTbl, baseRow, myKey, processed, outColIndex))
+            st = CLng(Val(a(2)))
+            ln = CLng(Val(a(3)))
+            GetScalarValue = Mid$(s3, st, ln)
+            Exit Function
+        End If
+
+    ElseIf Left$(u, 4) = "LEN(" And Right$(u, 1) = ")" Then
+        inside = Mid$(expr, 5, Len(expr) - 5)
+        Dim s4 As String
+        s4 = NormalizeText(GetScalarValue(inside, baseTbl, baseRow, myKey, processed, outColIndex))
+        GetScalarValue = CStr(Len(s4))
+        Exit Function
+    End If
+
+    ' 最終的には {tbl.col} を解決 → 正規化
+    Dim raw As String
+    If processed Then
+        raw = ResolveTokenProcessed(expr, baseTbl, baseRow, myKey, outColIndex)
+    Else
+        raw = ResolveTokenRaw(expr, baseTbl, baseRow, myKey)
+    End If
+    GetScalarValue = NormalizeText(raw)
 End Function
 
 '=== 文字列ユーティリティ ===
@@ -784,4 +946,3 @@ CONT_T:
     Next
     BuildRawValueIgnoringMode = acc
 End Function
-
