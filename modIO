@@ -184,51 +184,59 @@ End Sub
 Public Function LoadAllCsv(importPath As String, _
                            tblNames() As String, _
                            ByRef dict As Object) As Boolean
-    Dim i As Long, filePath As String, extra As String
-    
+    On Error GoTo FAIL
+
+    Dim i As Long
     If (Not Not tblNames) = 0 Then
-        If Dir(importPath, vbDirectory) = "" Then
-            MsgBox "入力フォルダが存在しません：" & importPath, vbCritical
-            LoadAllCsv = False: Exit Function
-        End If
-        LoadAllCsv = True: Exit Function
+        MsgBox "読み込むテーブルがありません（Mapping未読か空）", vbExclamation
+        LoadAllCsv = False
+        Exit Function
     End If
-    
-    ' 必須CSV存在チェック
-    For i = LBound(tblNames) To UBound(tblNames)
-        filePath = importPath & tblNames(i) & ".csv"
-        If Dir(filePath) = "" Then
-            MsgBox "必要ファイルが不足しています：" & vbCrLf & filePath, vbCritical
-            LoadAllCsv = False: Exit Function
-        End If
-    Next
-    
-    ' 余分CSVの警告
-    Dim fn As String, isListed As Boolean
-    fn = Dir(importPath & "*.csv")
-    Do While Len(fn) > 0
-        isListed = False
-        For i = LBound(tblNames) To UBound(tblNames)
-            If LCase$(fn) = LCase$(tblNames(i) & ".csv") Then isListed = True: Exit For
-        Next
-        If Not isListed Then
-            extra = extra & IIf(Len(extra) > 0, vbCrLf, "") & (importPath & fn)
-        End If
-        fn = Dir
+
+    If Dir(importPath, vbDirectory) = "" Then
+        MsgBox "入力フォルダが存在しません：" & importPath, vbCritical
+        LoadAllCsv = False
+        Exit Function
+    End If
+
+    ' フォルダ内CSVの索引（小文字ベース名→フルパス）を作る
+    Dim idx As Object: Set idx = CreateObject("Scripting.Dictionary")
+    Dim f As String, base As String
+    f = Dir(importPath & "*.csv")
+    Do While Len(f) > 0
+        base = LCase$(Left$(f, InStrRev(f, ".") - 1))   ' 拡張子除去
+        idx(base) = importPath & f                       ' 同名は後勝ちでOK
+        f = Dir()
     Loop
-    If Len(extra) > 0 Then
-        WriteLog "WARN", "Extra CSV exists (ignored):" & vbCrLf & extra
-        MsgBox "定義外のCSVがフォルダにあります（処理は続行）：" & vbCrLf & extra, vbExclamation
-    End If
-    
-    ' 読み込み
+
+    ' 要求テーブルだけ読み込む
     For i = LBound(tblNames) To UBound(tblNames)
-        filePath = importPath & tblNames(i) & ".csv"
-        dict(tblNames(i)) = ParseCsvFile(filePath)
-        WriteLog "INFO", "Loaded: " & filePath & " / rows=" & UBound(dict(tblNames(i)), 1)
+        Dim t As String, key As String, fp As String
+        t = CStr(tblNames(i))
+        key = LCase$(t)
+        If idx.Exists(key) Then
+            fp = idx(key)
+            Dim arr As Variant
+            arr = ParseCsvFile(fp)
+            ' 既に存在しても上書きにする（Add→Assign）
+            dict(t) = arr
+            WriteLog "INFO", "Loaded CSV: " & t & "  rows=" & IIf(IsArray(arr), UBound(arr, 1) - 1, 0)
+        Else
+            ' 必須テーブルが見つからない場合はエラー（必要ならここをWARNに変更可）
+            WriteLog "ERROR", "CSV not found for table: " & t
+            MsgBox "CSVファイルが見つかりません: " & t & vbCrLf & _
+                   "ファイル名は '" & t & ".csv' を想定しています。", vbCritical
+            LoadAllCsv = False
+            Exit Function
+        End If
     Next
-    
+
     LoadAllCsv = True
+    Exit Function
+FAIL:
+    WriteLog "ERROR", "LoadAllCsv error: " & Err.Number & " " & Err.Description
+    MsgBox "LoadAllCsvでエラー: " & Err.Description, vbCritical
+    LoadAllCsv = False
 End Function
 
 '==============================
