@@ -1,8 +1,51 @@
-ProcessDataでエラーと表示されます。
-SafeEvalのDo While oTop > 0 And ops(oTop) <> "("で落ちているように思います。
+ありがとうございます。原因はご指摘どおりで、VBAの And は短絡評価しないため、
 
-Function SafeEval(ByVal expr As String) As Double
-    expr = Replace(expr, " ", "")
+Do While oTop > 0 And ops(oTop) <> "("
+
+の右辺 ops(oTop) が oTop=0 の時にも評価され、Subscript out of range（配列範囲外）で落ちています。
+さらに、単項マイナス（先頭の - や (+/(- 直後の -）にも弱い可能性があります。
+
+下のパッチは、
+	•	短絡しない問題を回避（) の処理を段階的に判定）
+	•	単項マイナスを安全に処理（先頭や開き括弧・演算子の直後の -x を 0-x に変換）
+	•	オペレータ適用時のスタック安全性を追加（nTop>=2 を保証）
+
+したものです。modJoinAndEval の SafeEval（と補助の Precedence/ApplyOp）をそのまま置換してください。
+
+⸻
+
+安定版 SafeEval（置換用）
+
+Private Function SafeEval(ByVal expr As String) As Double
+    ' 前処理：空白除去
+    expr = Replace$(expr, " ", "")
+    If Len(expr) = 0 Then SafeEval = 0: Exit Function
+
+    ' 単項マイナスに対応：先頭の「-x」は「0-x」、"(-x" や "+-x" 等も「(0-x」「+0-x」に正規化
+    ' 簡易な正規化：先頭が "-" なら "0" を前置
+    If Left$(expr, 1) = "-" Then expr = "0" & expr
+    ' "( -" / "+-" / "*-" "/-" のように演算子 or "(" の直後に "-" が来たら "0-" をはさむ
+    Dim j As Long, out As String, cur As String, prev As String
+    out = ""
+    For j = 1 To Len(expr)
+        cur = Mid$(expr, j, 1)
+        If cur = "-" Then
+            If j = 1 Then
+                out = out & "0-"
+            Else
+                prev = Mid$(expr, j - 1, 1)
+                If prev = "(" Or prev = "+" Or prev = "-" Or prev = "*" Or prev = "/" Then
+                    out = out & "0-"
+                Else
+                    out = out & "-"
+                End If
+            End If
+        Else
+            out = out & cur
+        End If
+    Next j
+    expr = out
+
     Dim nums() As Double, ops() As String, nTop As Long, oTop As Long
     ReDim nums(1 To 1): ReDim ops(1 To 1): nTop = 0: oTop = 0
 
@@ -10,6 +53,8 @@ Function SafeEval(ByVal expr As String) As Double
     i = 1
     Do While i <= Len(expr)
         ch = Mid$(expr, i, 1)
+
+        ' 数値トークン（0-9 と小数点のみ）
         If ch Like "[0-9.]" Then
             num = ""
             Do While i <= Len(expr) And Mid$(expr, i, 1) Like "[0-9.]"
@@ -17,27 +62,104 @@ Function SafeEval(ByVal expr As String) As Double
                 i = i + 1
             Loop
             nTop = nTop + 1: ReDim Preserve nums(1 To nTop)
-            On Error Resume Next: nums(nTop) = CDbl(num): On Error GoTo 0
-            ' ★ 数値の直後は i を増やさない（次ループで演算子を読む）
-            GoTo NEXTITER
+            On Error Resume Next
+            nums(nTop) = CDbl(num)
+            On Error GoTo 0
+            GoTo NEXTITER ' 直後の演算子を次ループで読む
+
         ElseIf ch = "(" Then
             oTop = oTop + 1: ReDim Preserve ops(1 To oTop): ops(oTop) = ch
+
         ElseIf ch = ")" Then
-            Do While oTop > 0 And ops(oTop) <> "("
+            ' ★短絡しない問題を回避：段階的にチェック
+            Do While oTop > 0
+                If ops(oTop) = "(" Then
+                    oTop = oTop - 1 ' "(" をポップして終了
+                    Exit Do
+                End If
                 ApplyOp nums, nTop, ops, oTop
             Loop
-            If oTop > 0 And ops(oTop) = "(" Then oTop = oTop - 1
+
         ElseIf ch = "+" Or ch = "-" Or ch = "*" Or ch = "/" Then
             Do While oTop > 0 And Precedence(ops(oTop)) >= Precedence(ch)
                 ApplyOp nums, nTop, ops, oTop
             Loop
             oTop = oTop + 1: ReDim Preserve ops(1 To oTop): ops(oTop) = ch
+
+        Else
+            ' 想定外文字は無視（必要ならここでエラーにしても良い）
         End If
+
         i = i + 1
 NEXTITER:
     Loop
+
+    ' 残りの演算子を適用
     Do While oTop > 0
         ApplyOp nums, nTop, ops, oTop
     Loop
-    If nTop > 0 Then SafeEval = nums(nTop) Else SafeEval = 0
+
+    If nTop > 0 Then
+        SafeEval = nums(nTop)
+    Else
+        SafeEval = 0
+    End If
 End Function
+
+Private Function Precedence(ByVal op As String) As Long
+    Select Case op
+        Case "+", "-": Precedence = 1
+        Case "*", "/": Precedence = 2
+        Case Else:     Precedence = 0
+    End Select
+End Function
+
+' スタック安全性を強化
+Private Sub ApplyOp(ByRef nums() As Double, ByRef nTop As Long, ByRef ops() As String, ByRef oTop As Long)
+    If oTop <= 0 Then Exit Sub
+    Dim op As String
+    op = ops(oTop): oTop = oTop - 1
+
+    If nTop < 2 Then Exit Sub  ' 片側欠落を無視（防御）
+    Dim b As Double, a As Double
+    b = nums(nTop): nTop = nTop - 1
+    a = nums(nTop)
+
+    Dim r As Double
+    Select Case op
+        Case "+": r = a + b
+        Case "-": r = a - b
+        Case "*": r = a * b
+        Case "/": If b = 0 Then r = 0 Else r = a / b
+        Case Else: r = b ' 不明オペレータは後勝ち
+    End Select
+    nums(nTop) = r
+End Sub
+
+ポイント
+	•	")" の処理は
+
+Do While oTop > 0
+    If ops(oTop) = "(" Then oTop = oTop - 1: Exit Do
+    ApplyOp ...
+Loop
+
+の形にして、配列アクセス前に oTop>0 を必ず確認しています（短絡不要）。
+
+	•	ApplyOp は nTop<2 の場合は何もしない（スタック不足の保険）。
+	•	先頭／演算子直後の - を 0- に置換して単項マイナスをサポート。
+
+⸻
+
+これで確認してみてください
+
+イミディエイトで：
+
+? SafeEval("2+3")                    ' 5
+? SafeEval("100+50+0+100+0+0")       ' 250
+? SafeEval("(10+5)*2-3")             ' 27
+? SafeEval("-(5)+3")                 ' -2
+? SafeEval("1+(-2)+3")               ' 2
+
+上記が通れば、ProcessData 内でも落ちず、res/acc に正しい値が入るはずです。
+まだ何か落ちるようなら、該当セルで一時的に Debug.Print "expr=" & expr を入れて、具体的な式を教えてください。式の中に % や , が混ざる場合は、トークン置換側で ToNumberOrZero を適用済みなら小数化・桁区切り除去が効きます（ここは既に修正済みのはず）。
