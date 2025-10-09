@@ -1,2 +1,91 @@
-expr は "100+50+.　といった形で直りました。
-しかし、最終的に出力された値は0となっておりました。
+なるほど、ここまでで
+	•	置換後の expr は "100+50+..." に直った ✅
+	•	でも最終出力が 0 になる ❌
+
+という状態ですね。
+
+原因
+
+EvaluateExpr は行ごとに評価し、結果を acc に改行で連結しています。最後に processed=True かつ outColIndex>0 のとき FinalizeByType(acc, Map_DataType(outColIndex)) で「型整形」します。
+
+ところが、FinalizeByType の NUMBER 分岐は現在ほぼ「文字列全体が IsNumeric なら整数化、そうでなければ 0」というロジックです。acc の中に**改行（vbLf）**が 1 個でも混ざっていると IsNumeric(acc) は False になり、0 が返る構造です。
+
+Private Function FinalizeByType(ByVal s As String, ByVal dataType As String) As String
+    Select Case UCase$(dataType)
+        Case "NUMBER"
+            If Len(s) = 0 Then
+                FinalizeByType = ""
+            ElseIf IsNumeric(s) Then   ' ← 改行があると False になる
+                FinalizeByType = CStr(CLng(s))
+            Else
+                FinalizeByType = "0"    ' ← ここに落ちる
+            End If
+        ...
+
+対処（最小修正）
+
+NUMBER のときは、acc 内の各行を数値として集計しましょう（空行は無視、数値でなければ 0 として扱う）。これで「数式行が複数」「IF で条件的に 0 行/複数行」のケースでも安定します。
+
+パッチ（modJoinAndEval の FinalizeByType を差し替え）
+
+Private Function FinalizeByType(ByVal s As String, ByVal dataType As String) As String
+    Select Case UCase$(dataType)
+        Case "NUMBER"
+            If Len(s) = 0 Then
+                FinalizeByType = ""
+            Else
+                Dim total As Double, arr() As String, i As Long, one As String
+                ' 改行を統一して分割
+                s = Replace$(Replace$(s, vbCrLf, vbLf), vbCr, vbLf)
+                arr = Split(s, vbLf)
+                For i = LBound(arr) To UBound(arr)
+                    one = Trim$(arr(i))
+                    If Len(one) > 0 Then
+                        ' 全角→半角、カンマ/通貨/％処理は既存関数を再利用
+                        total = total + CDbl(Val(ToNumberOrZero(one)))
+                    End If
+                Next
+                ' 合計を整数として出す（必要なら四捨五入や小数対応に変更可）
+                FinalizeByType = CStr(CLng(total))
+            End If
+
+        Case "DATE"
+            If Len(s) = 0 Then
+                FinalizeByType = ""
+            ElseIf IsDate(s) Then
+                FinalizeByType = Format$(CDate(s), "yyyy/mm/dd")
+            Else
+                FinalizeByType = ""
+            End If
+
+        Case Else
+            FinalizeByType = s
+    End Select
+End Function
+
+これで、acc が "150" でも "100\n50" でも最終的に 150 が返ります。
+
+もう1つの確認（念のため）
+
+ReplaceTokensProcessedAsNumber 側でも 実値の解決行 がコメントアウトのままになっている箇所がありました。こちらも必ず有効化してください。
+
+' ReplaceTokensProcessedAsNumber(...):
+token = Mid$(s, pos + 1, pos2 - pos - 1)
+valStr = ResolveTokenProcessed(token, baseTbl, baseRow, myKey, outColIndex) ' ← これを有効化
+valStr = ToNumberOrZero(valStr)
+
+（ReplaceTokensWithRaw も同様に ResolveTokenRaw を使う版を有効化済みなら OK）
+
+⸻
+
+これで期待どおりになるはず
+	•	expr が "100+50+..." に展開 → SafeEval(expr) は "150" を返す
+	•	複数行になっても FinalizeByType(NUMBER) が合計してくれる
+	•	最終セルには 150 が表示される
+
+もしまだ数値が合わない場合は、EvaluateExpr 内で一時的に以下を入れて、実際の中間値をチェックしてください。
+
+Debug.Print "expr=" & expr, "res=" & res   ' SafeEval直後
+Debug.Print "acc=" & Replace(acc, vbLf, "|") ' 複数行可視化
+
+次は①の「カンマ区切り」ディレクティブ（JOIN(", ")）対応や③の正規化（UCASE / REPLACE の追加）もまとめてパッチ出せます。必要ならこのあと連投しますね。
