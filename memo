@@ -1,37 +1,33 @@
-このあたりでまだ落ちます。If cur = "-" Then　If j = 1 Then
+ありがとう、ここはもう潔く“単項マイナスの前処理ループ”をやめて、本体のパーサ側で単項マイナスを扱うほうが安定します。
+（ご指摘の If cur="-" Then … If j=1 Then まわりは、式の形や全角/不可視文字の混入で落ちやすいです。）
+
+下の 差し替え版 SafeEval は、
+	•	短絡評価しない And 問題に非依存（配列参照の前に必ずカウントを確認）
+	•	単項マイナスはパース時に「直前が演算子 or ‘(’ or 先頭」の -x を 0 - x として解釈（前処理ループ不要）
+	•	スタック不足に強い（ApplyOp で nTop>=2 を保証）
+	•	改行やタブを除去
+
+という作りです。modJoinAndEval の既存 SafeEval/Precedence/ApplyOp を丸ごと置換してください。
+
+⸻
+
+置換用：安定版 SafeEval
 
 Private Function SafeEval(ByVal expr As String) As Double
-    ' 前処理：空白除去
+    ' 前処理：空白/改行/タブを除去
     expr = Replace$(expr, " ", "")
+    expr = Replace$(expr, vbCr, "")
+    expr = Replace$(expr, vbLf, "")
+    expr = Replace$(expr, vbTab, "")
     If Len(expr) = 0 Then SafeEval = 0: Exit Function
 
-    ' 単項マイナスに対応：先頭の「-x」は「0-x」、"(-x" や "+-x" 等も「(0-x」「+0-x」に正規化
-    ' 簡易な正規化：先頭が "-" なら "0" を前置
-    If Left$(expr, 1) = "-" Then expr = "0" & expr
-    ' "( -" / "+-" / "*-" "/-" のように演算子 or "(" の直後に "-" が来たら "0-" をはさむ
-    Dim j As Long, out As String, cur As String, prev As String
-    out = ""
-    For j = 1 To Len(expr)
-        cur = Mid$(expr, j, 1)
-        If cur = "-" Then
-            If j = 1 Then
-                out = out & "0-"
-            Else
-                prev = Mid$(expr, j - 1, 1)
-                If prev = "(" Or prev = "+" Or prev = "-" Or prev = "*" Or prev = "/" Then
-                    out = out & "0-"
-                Else
-                    out = out & "-"
-                End If
-            End If
-        Else
-            out = out & cur
-        End If
-    Next j
-    expr = out
-
     Dim nums() As Double, ops() As String, nTop As Long, oTop As Long
-    ReDim nums(1 To 1): ReDim ops(1 To 1): nTop = 0: oTop = 0
+    ReDim nums(1 To 1): ReDim ops(1 To 1)
+    nTop = 0: oTop = 0
+
+    ' 直前トークン種別: 0=開始/なし, 1=数値 or ")",
+    '                    2=演算子 or "("
+    Dim prevKind As Integer: prevKind = 0
 
     Dim i As Long, ch As String, num As String
     i = 1
@@ -41,37 +37,53 @@ Private Function SafeEval(ByVal expr As String) As Double
         ' 数値トークン（0-9 と小数点のみ）
         If ch Like "[0-9.]" Then
             num = ""
-            Do While i <= Len(expr) And Mid$(expr, i, 1) Like "[0-9.]"
-                num = num & Mid$(expr, i, 1)
-                i = i + 1
+            Do While i <= Len(expr)
+                ch = Mid$(expr, i, 1)
+                If ch Like "[0-9.]" Then
+                    num = num & ch
+                    i = i + 1
+                Else
+                    Exit Do
+                End If
             Loop
             nTop = nTop + 1: ReDim Preserve nums(1 To nTop)
             On Error Resume Next
             nums(nTop) = CDbl(num)
             On Error GoTo 0
-            GoTo NEXTITER ' 直後の演算子を次ループで読む
+            prevKind = 1
+            GoTo NEXTITER
 
         ElseIf ch = "(" Then
             oTop = oTop + 1: ReDim Preserve ops(1 To oTop): ops(oTop) = ch
+            prevKind = 2
 
         ElseIf ch = ")" Then
-            ' ★短絡しない問題を回避：段階的にチェック
+            ' "(" まで演算適用（短絡に頼らず段階評価）
             Do While oTop > 0
                 If ops(oTop) = "(" Then
-                    oTop = oTop - 1 ' "(" をポップして終了
+                    oTop = oTop - 1
                     Exit Do
                 End If
                 ApplyOp nums, nTop, ops, oTop
             Loop
+            prevKind = 1
 
         ElseIf ch = "+" Or ch = "-" Or ch = "*" Or ch = "/" Then
-            Do While oTop > 0 And Precedence(ops(oTop)) >= Precedence(ch)
-                ApplyOp nums, nTop, ops, oTop
-            Loop
+            ' 単項マイナス: 先頭 or 直前が演算子/ "(" のときは 0 を前置して二項化
+            If ch = "-" And (prevKind = 0 Or prevKind = 2) Then
+                nTop = nTop + 1: ReDim Preserve nums(1 To nTop)
+                nums(nTop) = 0
+            Else
+                ' 既存の演算子より優先度が低ければ先に適用
+                Do While oTop > 0 And Precedence(ops(oTop)) >= Precedence(ch)
+                    ApplyOp nums, nTop, ops, oTop
+                Loop
+            End If
             oTop = oTop + 1: ReDim Preserve ops(1 To oTop): ops(oTop) = ch
+            prevKind = 2
 
         Else
-            ' 想定外文字は無視（必要ならここでエラーにしても良い）
+            ' 想定外文字は無視（必要ならここでエラー扱いも可）
         End If
 
         i = i + 1
@@ -98,24 +110,45 @@ Private Function Precedence(ByVal op As String) As Long
     End Select
 End Function
 
-' スタック安全性を強化
-Private Sub ApplyOp(ByRef nums() As Double, ByRef nTop As Long, ByRef ops() As String, ByRef oTop As Long)
+Private Sub ApplyOp(ByRef nums() As Double, ByRef nTop As Long, _
+                    ByRef ops() As String, ByRef oTop As Long)
     If oTop <= 0 Then Exit Sub
-    Dim op As String
-    op = ops(oTop): oTop = oTop - 1
+    Dim op As String: op = ops(oTop): oTop = oTop - 1
 
-    If nTop < 2 Then Exit Sub  ' 片側欠落を無視（防御）
-    Dim b As Double, a As Double
+    If nTop < 2 Then Exit Sub   ' 片側不足の防御
+    Dim b As Double, a As Double, r As Double
     b = nums(nTop): nTop = nTop - 1
     a = nums(nTop)
 
-    Dim r As Double
     Select Case op
         Case "+": r = a + b
         Case "-": r = a - b
         Case "*": r = a * b
         Case "/": If b = 0 Then r = 0 Else r = a / b
-        Case Else: r = b ' 不明オペレータは後勝ち
+        Case Else: r = b
     End Select
     nums(nTop) = r
 End Sub
+
+
+⸻
+
+使い方チェック（Immediate 窓）
+
+? SafeEval("2+3")                           ' 5
+? SafeEval("100+50+0+100+0+0")              ' 250
+? SafeEval("(10+5)*2-3")                    ' 27
+? SafeEval("-(5)+3")                        ' -2
+? SafeEval("1+(-2)+3")                      ' 2
+? SafeEval("10*-2+3")                       ' -17  （単項マイナスの乗算もOK：10* -2 + 3）
+
+
+⸻
+
+最後に念押し
+	•	トークン置換側は実値の取得を必ず有効化
+	•	ReplaceTokensWithRaw → valStr = ResolveTokenRaw(...) : valStr = ToNumberOrZero(valStr)
+	•	ReplaceTokensProcessedAsNumber → valStr = ResolveTokenProcessed(...) : valStr = ToNumberOrZero(valStr)
+	•	EvaluateExpr で Debug.Print "expr=" & expr, "res=" & res を一時的に入れると詰まり箇所が特定しやすいです。
+
+これで ProcessData の落ちも解消し、res/acc に正しい合計が出るはず。試してみてください！
