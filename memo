@@ -1,3 +1,70 @@
-まだ直っていないです。
-exper = "100+50+0+100+0+0"
-resとaccは"0"でした。
+原因わかりました。SafeEval が数値を読んだ直後に i を二重に進めてしまい、演算子（+ − × ÷）を読み飛ばしているせいで、スタックに最後の数値だけが残り、結果が常にその最後の数値（今回たまたま 0）になっていました。
+
+直すところ（そのまま置換でOK）
+
+modJoinAndEval の SafeEval を下記で差し替えてください。ポイントは、数値を読み終えたら i を増やさない（＝直後の i = i + 1 をスキップ）ことです。
+
+Function SafeEval(ByVal expr As String) As Double
+    expr = Replace(expr, " ", "")
+    Dim nums() As Double, ops() As String, nTop As Long, oTop As Long
+    ReDim nums(1 To 1): ReDim ops(1 To 1): nTop = 0: oTop = 0
+
+    Dim i As Long, ch As String, num As String
+    i = 1
+    Do While i <= Len(expr)
+        ch = Mid$(expr, i, 1)
+        If ch Like "[0-9.]" Then
+            num = ""
+            Do While i <= Len(expr) And Mid$(expr, i, 1) Like "[0-9.]"
+                num = num & Mid$(expr, i, 1)
+                i = i + 1
+            Loop
+            nTop = nTop + 1: ReDim Preserve nums(1 To nTop)
+            On Error Resume Next: nums(nTop) = CDbl(num): On Error GoTo 0
+            ' ★ 数値の直後は i を増やさない（次ループで演算子を読む）
+            GoTo NEXTITER
+        ElseIf ch = "(" Then
+            oTop = oTop + 1: ReDim Preserve ops(1 To oTop): ops(oTop) = ch
+        ElseIf ch = ")" Then
+            Do While oTop > 0 And ops(oTop) <> "("
+                ApplyOp nums, nTop, ops, oTop
+            Loop
+            If oTop > 0 And ops(oTop) = "(" Then oTop = oTop - 1
+        ElseIf ch = "+" Or ch = "-" Or ch = "*" Or ch = "/" Then
+            Do While oTop > 0 And Precedence(ops(oTop)) >= Precedence(ch)
+                ApplyOp nums, nTop, ops, oTop
+            Loop
+            oTop = oTop + 1: ReDim Preserve ops(1 To oTop): ops(oTop) = ch
+        End If
+        i = i + 1
+NEXTITER:
+    Loop
+    Do While oTop > 0
+        ApplyOp nums, nTop, ops, oTop
+    Loop
+    If nTop > 0 Then SafeEval = nums(nTop) Else SafeEval = 0
+End Function
+
+既存コードの GoTo CONT を上の GoTo NEXTITER に置き換え、そして末尾に NEXTITER: ラベルを追加しています（i = i + 1 の直後）。これで「数値の直後に演算子を読む」流れになります。
+
+すぐ試せる動作確認（イミディエイト）
+
+? SafeEval("2+3")                 ' → 5
+? SafeEval("100+50+0+100+0+0")    ' → 250
+? SafeEval("(10+5)*2-3")          ' → 27
+
+念のため：トークン置換も有効化を
+
+計算式展開が "100+50+..." になっているなら OK ですが、まだなら下記2行のコメントアウトを外しておいてください。
+
+' ReplaceTokensWithRaw:
+valStr = ResolveTokenRaw(token, baseTbl, baseRow, myKey)
+
+' ReplaceTokensProcessedAsNumber:
+valStr = ResolveTokenProcessed(token, baseTbl, baseRow, myKey, outColIndex)
+
+
+⸻
+
+これで res も acc も 250 になるはずです。
+（複数行の数値を最終的に合算したいケースは、前にお渡しした FinalizeByType(NUMBER) の合算版に差し替えるとより堅牢になりますが、今回の“1行の四則演算”は上記 SafeEval 修正だけで解決します。）
