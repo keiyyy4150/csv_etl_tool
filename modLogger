@@ -1,6 +1,16 @@
 Option Explicit
+'============================================================
+' modLogger
+' 概要: ログ出力ユーティリティ。ツール内での情報・警告・エラーを1日1ファイルのログとして書き出します。
+'============================================================
 
 '=== ログ出力（1日1ファイル） ===
+
+'--- WriteLog ---
+' 概要: ログを追記出力します。
+' 引数:
+'   level As String  … ログレベル（'INFO'/'WARN'/'ERROR' など）
+'   message As String  … メッセージ本文
 Public Sub WriteLog(level As String, message As String)
     On Error Resume Next
     Dim basePath As String, logDir As String, logPath As String
