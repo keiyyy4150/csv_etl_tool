@@ -1,145 +1,282 @@
-OK、ここはSafeEvalを一旦“使わない”方針に切り替えるのが最速で確実です。
-ご要望の「Definitions側で SUM(...) を書けるようにする」＋「四則演算行は Excel の Evaluate に投げる（失敗時のみ SafeEval にフォールバック）」の2段構えにしましょう。これでいまの落ちを回避しつつ、②の加算も安定して通ります。
+めっちゃ分かります…
+400列 × 4,000行（＝160万セル）に、さらに EXPR/IF/トークン解決/複数テーブル JOIN が乗ると、素直に書いただけでは爆遅になります。
+いまの構成を崩さず「最小改修」で効く高速化を、即入れられる順にまとめます。必要な場所の差分コードも添えました。
 
 ⸻
 
-1) SUM() を Definitions から使えるようにする（新規関数）
+まずは“環境系”スイッチ（即効・安全）
 
-使い方（Definitions）
+Import / Process / Export の入口と出口で包むだけで全体が速くなります。
 
-SUM({tbl.col1}, {tbl.col2}, {tbl2.colA}, "30", "20")
+'=== 共通ガード ===
+Private Sub SpeedUpON()
+    With Application
+        .ScreenUpdating = False
+        .EnableEvents = False
+        .DisplayStatusBar = False
+        .Calculation = xlCalculationManual
+    End With
+End Sub
 
-→ 文字列数値やトークンを混ぜてOK。空や非数値は0扱い。
+Private Sub SpeedUpOFF()
+    With Application
+        .Calculation = xlCalculationAutomatic
+        .ScreenUpdating = True
+        .EnableEvents = True
+        .DisplayStatusBar = True
+        .StatusBar = False
+    End With
+End Sub
 
-差し込みコード（modJoinAndEval）
-EvaluateExpr の「Else（式）」分岐の直前に SUM( 判定を入れ、合計します。
+	•	Import / ProcessData / Clear / Export の先頭で SpeedUpON、最後で SpeedUpOFF。
+	•	例外時もOFFできるよう、On Error で finally っぽく書くのがコツ。
 
-'=== ユーティリティ: 数値化（既存 ToNumberOrZero を流用）
-Private Function NumVal(ByVal s As String) As Double
-    NumVal = CDbl(Val(ToNumberOrZero(s)))
-End Function
+⸻
 
-'=== SUM( … ) の評価
-Private Function EvalSUM(ByVal line As String, baseTbl As String, baseRow As Long, myKey As String, _
-                         ByVal processed As Boolean, ByVal outColIndex As Long) As String
-    Dim inside As String, args As Collection, i As Long, v As String, total As Double
-    inside = Mid$(line, 5, Len(line) - 5) ' "SUM(" の後ろから末尾 ")" まで
-    Set args = SplitArgs(inside)
-    For i = 1 To args.Count
-        ' {tbl.col} / 数字文字列 / リテラル すべて GetScalarValue で解決
-        v = GetScalarValue(args(i), baseTbl, baseRow, myKey, processed, outColIndex)
-        total = total + NumVal(v)
+ボトルネックの核心：毎セルで「解析」してる
+
+現状は1セルごとに
+	•	テーブル名→列名分割（SafeGetSrcColNames が Collection を生成）
+	•	列名→列番号検索（FindColumnIndex が毎回ヘッダ走査）
+	•	VALUE/EXPR ごとに文字列置換・式評価
+
+…を繰り返しています。ここをキャッシュに置き換えると桁違いに速くなります。
+
+⸻
+
+1) 「列名→列番号」＆「Join するか否か」を事前キャッシュ
+
+新規：実行時キャッシュを組み立て
+
+' 実行時キャッシュ
+Public Cache_Built As Boolean
+Public Cache_BaseTbl As String
+Public Cache_ColIdx() As Variant ' (col, t) ごとに Long() の配列（列番号の配列）
+Public Cache_DoJoin() As Boolean  ' 列ごとの doJoin（VALUE/空 なら True）
+Public Cache_TblCount As Long
+
+Public Sub BuildRuntimeCache(baseTbl As String)
+    Dim t As Long, c As Long, names As Collection, arr As Variant, ci As Long
+    Dim outColsCnt As Long: outColsCnt = UBound(Map_OutCols) - LBound(Map_OutCols) + 1
+
+    Cache_BaseTbl = baseTbl
+    Cache_TblCount = UBound(Map_TblNames) - LBound(Map_TblNames) + 1
+    ReDim Cache_ColIdx(1 To outColsCnt, LBound(Map_TblNames) To UBound(Map_TblNames))
+    ReDim Cache_DoJoin(1 To outColsCnt)
+
+    ' 列ごとに doJoin 判定
+    For c = 1 To outColsCnt
+        Cache_DoJoin(c) = (UCase$(Map_Mode(c)) = "VALUE" Or Len(Map_Mode(c)) = 0)
     Next
-    EvalSUM = CStr(total)
-End Function
 
-そして EvaluateExpr の式分岐をこう変更してください（★印の行を追加）：
-
-Else
-    Dim expr As String, up As String
-    up = UCase$(one)
-
-    ' ★ Definitions で SUM(...) をそのまま使えるように
-    If Left$(up, 4) = "SUM(" And Right$(up, 1) = ")" Then
-        res = EvalSUM(one, baseTbl, baseRow, myKey, processed, outColIndex)
-
-    Else
-        If processed Then
-            expr = ReplaceTokensProcessedAsNumber(one, baseTbl, baseRow, myKey, outColIndex)
-        Else
-            expr = ReplaceTokensWithRaw(one, baseTbl, baseRow, myKey)
+    ' テーブルごとのヘッダ配列を一度だけ取る
+    Dim tblHeaders() As Variant
+    ReDim tblHeaders(LBound(Map_TblNames) To UBound(Map_TblNames))
+    For t = LBound(Map_TblNames) To UBound(Map_TblNames)
+        arr = TableData(Map_TblNames(t))
+        If (Not IsEmpty(arr)) Then
+            ' 1行目が見出し
+            tblHeaders(t) = arr
         End If
+    Next
 
-        ' ★ まずは Excel の Evaluate で計算 → 失敗時のみ SafeEval へ
-        Dim v As Variant
-        On Error Resume Next
-        v = Application.Evaluate("=" & expr)
-        On Error GoTo 0
-        If IsError(v) Or VarType(v) = vbError Or IsEmpty(v) Then
-            res = CStr(SafeEval(expr))
-        Else
-            res = CStr(v)
-        End If
-    End If
+    ' (col, table) ごとに列番号の配列を作って保持
+    For t = LBound(Map_TblNames) To UBound(Map_TblNames)
+        For c = 1 To outColsCnt
+            Set names = SafeGetSrcColNames(c, t)
+            If Not names Is Nothing And names.Count > 0 Then
+                Dim idxs() As Long, k As Long, nm As String, picked As Long, arrHdr As Variant
+                arrHdr = tblHeaders(t)
+                ReDim idxs(1 To names.Count): picked = 0
+                For k = 1 To names.Count
+                    nm = names(k)
+                    If IsNumeric(nm) Then
+                        ci = CLng(nm)
+                    Else
+                        ci = FindColumnIndex(arrHdr, nm)
+                    End If
+                    If ci > 0 Then
+                        picked = picked + 1
+                        idxs(picked) = ci
+                    End If
+                Next
+                If picked > 0 Then
+                    ReDim Preserve idxs(1 To picked)
+                    Cache_ColIdx(c, t) = idxs
+                Else
+                    Cache_ColIdx(c, t) = Empty
+                End If
+            Else
+                Cache_ColIdx(c, t) = Empty
+            End If
+        Next
+    Next
 
-    If acc = "" Then acc = res Else acc = acc & vbLf & res
+    Cache_Built = True
+End Sub
+
+	•	これで列名検索を全廃。本番ループは番号で直叩きできます。
+	•	SafeGetSrcColNames の Collection 生成はこの1回きり。
+
+呼び出し（Import/Processの最初で）
+
+If Not Cache_Built Or Cache_BaseTbl <> m_baseTblName Then
+    BuildRuntimeCache m_baseTblName
 End If
 
-ポイント
-	•	SUM() はSafeEvalを通さないので落ちません。
-	•	SUMの引数は {tbl.col} でも "100" でもOK（GetScalarValue → ToNumberOrZero で数値化）。
-	•	他の「100+50+…」のような生式は Excel の Evaluate("=" & expr) に投げます。これもパーサを自作しないので堅牢です（小数点は . でOK）。
 
 ⸻
 
-2) 行末で 0 になる問題の“型整形”を修正（合算版 Finalize）
+2) BuildValueModeRaw をキャッシュ利用の高速版に
 
-複数行（改行区切り）になった時に IsNumeric(acc)=False → 0 になっているので、数値型のときは行ごとに合算する版に戻します（※以前コメントアウトしていた版）。
+Public Function BuildValueModeRaw_Fast(colIndex As Long, baseTbl As String, baseRow As Long, myKey As String, _
+                                       Optional matchIndex As Long = 1) As String
+    Dim t As Long, arr As Variant, idxs As Variant, acc As String, v As String
+    Dim doJoin As Boolean: doJoin = Cache_DoJoin(colIndex)
 
-Private Function FinalizeByType(ByVal s As String, ByVal dataType As String) As String
-    Select Case UCase$(dataType)
-        Case "NUMBER"
-            If Len(s) = 0 Then
-                FinalizeByType = ""
-            Else
-                Dim total As Double, arr() As String, i As Long, one As String
-                s = Replace$(Replace$(s, vbCrLf, vbLf), vbCr, vbLf)
-                arr = Split(s, vbLf)
-                For i = LBound(arr) To UBound(arr)
-                    one = Trim$(arr(i))
-                    If Len(one) > 0 Then total = total + CDbl(Val(ToNumberOrZero(one)))
-                Next
-                FinalizeByType = CStr(CLng(total))
-            End If
+    For t = LBound(Map_TblNames) To UBound(Map_TblNames)
+        idxs = Cache_ColIdx(colIndex, t)
+        If IsEmpty(idxs) Then GoTo CONT_T
 
-        Case "DATE"
-            If Len(s) = 0 Then
-                FinalizeByType = ""
-            ElseIf IsDate(s) Then
-                FinalizeByType = Format$(CDate(s), "yyyy/mm/dd")
-            Else
-                FinalizeByType = ""
-            End If
-
-        Case Else
-            FinalizeByType = s
-    End Select
+        If Map_TblNames(t) = baseTbl Then
+            arr = TableData(baseTbl)
+            Dim k As Long
+            For k = LBound(idxs) To UBound(idxs)
+                v = CStr(arr(baseRow, idxs(k)))
+                If doJoin Then
+                    If Len(v) > 0 Then
+                        If Len(acc) = 0 Then acc = v Else acc = acc & vbLf & v
+                    End If
+                Else
+                    If Len(v) > 0 Then BuildValueModeRaw_Fast = v: Exit Function
+                End If
+            Next
+        Else
+            Dim k2 As Long
+            For k2 = LBound(idxs) To UBound(idxs)
+                v = GetValueFromTableMulti(Map_TblNames(t), CStr(idxs(k2)), myKey, matchIndex)
+                If doJoin Then
+                    If Len(v) > 0 Then
+                        If Len(acc) = 0 Then acc = v Else acc = acc & vbLf & v
+                    End If
+                Else
+                    If Len(v) > 0 Then BuildValueModeRaw_Fast = v: Exit Function
+                End If
+            Next
+        End If
+CONT_T:
+    Next
+    BuildValueModeRaw_Fast = acc
 End Function
 
-これで、EXPR の1行が 150 でも、複数行で 100 と 50 が分かれていても、最終セルは 150 になります。
+ここでは列番号を直接使うので FindColumnIndex も Collection も呼びません。
+
+BuildJoinedRaw 側の1行差し替え
+
+' 旧：
+' result(outRow, c) = BuildValueModeRaw(c, baseTbl, r, myKey, k, True)
+
+' 新：
+result(outRow, c) = BuildValueModeRaw_Fast(c, baseTbl, r, myKey, k)
+
+※ いま常に forceJoinMultiple:=True でしたが、Cache_DoJoin が判定を持つので不要です。
+（Listパイプラインの1対多は MaxMatchesForKey × matchIndex で担保）
 
 ⸻
 
-3) すぐ試せるサンプル（Definitions 例）
+3) EvaluateExpr をベクタ化（式評価の回数を切る）
+	•	Definitions で合計はできるだけ SUM(...) を推奨（SafeEval/Evaluate を回避）。
+	•	それ以外の + 連結でも引数を先に取り出してまとめて ToNumberOrZero する方が速いです。
+　→ ただし“汎用四則演算”が必要なら、式は短く＆括弧は最小限に。
 
-(A) いまの式そのまま（Evaluate 使用）
+（すでに前回ご案内の SUM() 実装を入れてあれば、このままでOKです。式評価分の時間がかなり消えます。）
 
-{pcm_t_...一般懸賞1_6}+{pcm_t_...一般懸賞2_6}+{pcm_t_...一般懸賞3_6}
-+{pcm_t_...総付景品1_4}+{pcm_t_...総付景品2_4}+{pcm_t_...総付景品3_4}
+⸻
 
-(B) SUM を使う（おすすめ）
+4) ReDim Preserve の抑制
 
-SUM(
-  {pcm_t_...一般懸賞1_6},
-  {pcm_t_...一般懸賞2_6},
-  {pcm_t_...一般懸賞3_6},
-  {pcm_t_...総付景品1_4},
-  {pcm_t_...総付景品2_4},
-  {pcm_t_...総付景品3_4}
-)
+スタック（nums/ops）で ReDim Preserve を反復していると遅いです。
+最大長が「トークン数 ≒ 文字数/2」程度と見なして一括確保→topのみ動かすと速くなります。
+※ SafeEvalを避けて SUM() に寄せる方がラクなので、今回は避けの方向を推奨。
+
+⸻
+
+5) ログを止める
+
+WriteLog "DEBUG", ... がループ内にある場合、ハマるとI/Oで数十倍遅くなります。
+	•	量が多い処理では If gDebug Then WriteLog ... で明示スイッチ＆デフォルトOFFに。
+
+⸻
+
+6) Range・Variantの塊読み/塊書きを徹底
+	•	読み：CSV→配列→一気にシートに書く（セル単位 .Value = は禁止）
+	•	書き：最終の Master 反映も配列一括（Range(Cells(…), Cells(…)).Value = arr）
+	•	既にその設計ならOK。中で部分書きしていないかを確認。
+
+⸻
+
+7) TableData のキャッシュ（再）
+
+TableData(tbl) が同じ配列を返す想定でも、呼ぶたびに間接コストはかかります。
+	•	Dim arrBase: arrBase = TableData(baseTbl) を上で掴み、内側のループにローカル参照を渡す
+	•	TableData 側にも辞書キャッシュ（ロード済みはそのまま返す）を入れておく
+
+⸻
+
+8) フィルタは前段でまとめて落とす
+
+Filter_Rules（有効/対象/列/演算子/値）による絞りは、
+	•	インポート直後に1回だけ配列をスキャンして対象行だけを残す
+	•	以降の JOIN/EXPR は小さくなった配列を処理
+これだけで後段全体の計算量が直線的に減ります。
+
+⸻
+
+9) 可能なら「列のモード別」処理に分割
+	•	VALUE 列 → BuildValueModeRaw_Fast だけ
+	•	EXPR 列 → EvaluateExpr（でも SUM() を優先）
+	•	CONCAT 列 → 連結だけ
+モードごとに最短パスで書くと分岐が減って速くなります。
+
+⸻
+
+10) 実測できるミニ・プロファイラ
+
+どこが効いているか必ず実測しましょう。
+
+Private Type TTick
+    Name As String
+    t As Double
+End Type
+
+Private Function TNow() As Double
+    TNow = Timer   ' 秒（精度 ~1/100）
+End Function
+
+Private Sub Tick(ByRef x As TTick, label As String)
+    x.Name = label: x.t = TNow
+End Sub
+
+Private Sub Tock(ByRef x As TTick)
+    Debug.Print x.Name & " : "; Format$(TNow - x.t, "0.000") & " sec"
+End Sub
+
+使い方：
+
+Dim tt As TTick
+Tick tt, "BuildRuntimeCache": BuildRuntimeCache m_baseTblName: Tock tt
+Tick tt, "BuildJoinedRaw":    arr = BuildJoinedRaw(...):     Tock tt
+Tick tt, "ApplyTransform":    arr2 = ApplyTransformSmart(...): Tock tt
 
 
 ⸻
 
-4) ①の「カンマ区切り」について（補足）
+まとめ（導入順のおすすめ）
+	1.	SpeedUpON/OFF（入口/出口）
+	2.	BuildRuntimeCache を導入 → BuildValueModeRaw_Fast に差し替え
+	3.	Definitions で SUM() を使うよう運用＆EvaluateExpr に SUM 分岐
+	4.	ログ停止・塊読み/書き・TableData キャッシュの徹底
+	5.	余裕があればフィルタを最前段に
 
-JOIN(", ") ディレクティブ対応は引き続き有効な案ですが、まずは合計が正しく出ることを優先し、今回のパッチ適用後に入れるのが安全です。必要なら、次の返答で JOIN 実装の最小差分もまとめてお渡しします。
-
-⸻
-
-まとめ
-	•	SafeEval が落ちる件は、Excel の Evaluate にオフロードしつつ、SUM 関数をネイティブ対応するのが最短で安定。
-	•	最終の数値型整形は行ごと合算版に置き換え。
-	•	これで「exprは展開されているのに結果が0」問題を解消できます。
-
-この方針で一度貼り替えてみてください。動いたら、①のカンマ区切り（JOIN(", ")）と③の正規化（UCASE/REPLACE）も続けて入れましょう。
+これだけで「400列 × 4,000行」クラスでも体感で何倍も短くなります。
+必要なら、あなたのプロジェクトに合わせて上記パッチを貼り付け可能な完成版にまとめてお渡しします。
