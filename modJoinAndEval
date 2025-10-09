@@ -158,7 +158,7 @@ Public Function CollectKeyColIndexesForBase(baseArr As Variant, baseTbl As Strin
     If tIdx < LBound(Map_TblNames) Then
         CollectKeyColIndexesForBase = Array(): Exit Function
     End If
- 
+
     kc = 0
     For i = LBound(Map_OutCols) To UBound(Map_OutCols)
         If Map_IsKey(i) Then
@@ -167,10 +167,10 @@ Public Function CollectKeyColIndexesForBase(baseArr As Variant, baseTbl As Strin
         End If
     Next
     If kc = 0 Then CollectKeyColIndexesForBase = Array(): Exit Function
- 
+
     Dim idx() As Long, cur As Long
     ReDim idx(1 To kc): cur = 0
- 
+
     For i = LBound(Map_OutCols) To UBound(Map_OutCols)
         If Map_IsKey(i) Then
             Set names = SafeGetSrcColNames(i, tIdx)
@@ -423,6 +423,25 @@ SAFE:
     GetValueFromTableMulti = ""
 End Function
 
+'=== ユーティリティ: 数値化（既存 ToNumberOrZero を流用）
+Private Function NumVal(ByVal s As String) As Double
+    NumVal = CDbl(Val(ToNumberOrZero(s)))
+End Function
+
+'=== SUM( … ) の評価
+Private Function EvalSUM(ByVal line As String, baseTbl As String, baseRow As Long, myKey As String, _
+                         ByVal processed As Boolean, ByVal outColIndex As Long) As String
+    Dim inside As String, args As Collection, i As Long, v As String, total As Double
+    inside = Mid$(line, 5, Len(line) - 5) ' "SUM(" の後ろから末尾 ")" まで
+    Set args = SplitArgs(inside)
+    For i = 1 To args.Count
+        ' {tbl.col} / 数字文字列 / リテラル すべて GetScalarValue で解決
+        v = GetScalarValue(args(i), baseTbl, baseRow, myKey, processed, outColIndex)
+        total = total + NumVal(v)
+    Next
+    EvalSUM = CStr(total)
+End Function
+
 '==============================
 ' EXPR 評価（IF/IFALL/IFANY + 数式 + テンプレ）
 '==============================
@@ -444,15 +463,34 @@ Public Function EvaluateExpr(def As String, baseTbl As String, baseRow As Long, 
                 If acc = "" Then acc = res Else acc = acc & vbLf & res
             End If
         Else
-            Dim expr As String
-            If processed Then
-                expr = ReplaceTokensProcessedAsNumber(one, baseTbl, baseRow, myKey, outColIndex)
+            Dim expr As String, up As String
+            up = UCase$(one)
+
+            ' ★ Definitions で SUM(...) をそのまま使えるように
+            If Left$(up, 4) = "SUM(" And Right$(up, 1) = ")" Then
+                res = EvalSUM(one, baseTbl, baseRow, myKey, processed, outColIndex)
+
             Else
-                expr = ReplaceTokensWithRaw(one, baseTbl, baseRow, myKey)
+                If processed Then
+                    expr = ReplaceTokensProcessedAsNumber(one, baseTbl, baseRow, myKey, outColIndex)
+                Else
+                    expr = ReplaceTokensWithRaw(one, baseTbl, baseRow, myKey)
+                End If
+
+                ' ★ まずは Excel の Evaluate で計算 → 失敗時のみ SafeEval へ
+                Dim v As Variant
+                On Error Resume Next
+                v = Application.Evaluate("=" & expr)
+                On Error GoTo 0
+                If IsError(v) Or VarType(v) = vbError Or IsEmpty(v) Then
+                    res = CStr(SafeEval(expr))
+                Else
+                    res = CStr(v)
+                End If
             End If
-            res = CStr(SafeEval(expr))
-            If acc = "" Then acc = res Else acc = acc & vbLf & res
-        End If
+
+    If acc = "" Then acc = res Else acc = acc & vbLf & res
+End If
 CONT:
     Next
     If processed And outColIndex > 0 Then
@@ -914,7 +952,7 @@ Public Function BuildRawValueIgnoringMode(colIndex As Long, baseTbl As String, b
     For t = LBound(Map_TblNames) To UBound(Map_TblNames)
         Dim names As Collection: Set names = SafeGetSrcColNames(colIndex, t)
         If names.Count = 0 Then GoTo CONT_T
-        
+
         If Map_TblNames(t) = baseTbl Then
             Dim arr As Variant: arr = TableData(baseTbl)
             Dim j As Long, nm As String, ci As Long, v As String
