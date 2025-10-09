@@ -1,5 +1,5 @@
 ProcessDataでエラーと表示されます。
-SafeEvalで落ちているように思います。
+SafeEvalのDo While oTop > 0 And ops(oTop) <> "("で落ちているように思います。
 
 Function SafeEval(ByVal expr As String) As Double
     expr = Replace(expr, " ", "")
