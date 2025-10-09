@@ -1,8 +1,10 @@
 Option Explicit
+'============================================================
+' modGlobals
+' 概要: 定数・共有状態（エンコード、パイプライン設定、読み込みテーブル、マッピング配列など）を保持します。
+'============================================================
 
-'==============================
 ' グローバル定数・共有変数
-'==============================
 Public Const IMPORT_FOLDER As String = "importFiles"   ' 入力フォルダ
 Public Const EXPORT_FOLDER As String = "exportFiles"   ' 出力フォルダ
 Public Const LOG_FOLDER    As String = "log"           ' ログフォルダ
@@ -46,12 +48,18 @@ Public m_baseRowIdx() As Long
 '=== 追加：インポート時はモードを無視するフラグ ===
 Public IgnoreModeOnImport As Boolean
 
-'==============================
 ' 共通関数
-'==============================
+
+'--- TimeStamp ---
+' 概要: この手続きの役割を説明します。
 Public Function TimeStamp() As String
     TimeStamp = Format(Now, "yyyymmddhhmmss")
 End Function
+
+'--- IsArrayInitialized ---
+' 概要: この手続きの役割を説明します。
+' 引数:
+'   ByVal v As Variant  … 用途を指定します。
 
 Public Function IsArrayInitialized(ByVal v As Variant) As Boolean
     On Error GoTo EH
@@ -64,6 +72,11 @@ Public Function IsArrayInitialized(ByVal v As Variant) As Boolean
 EH:
     IsArrayInitialized = False
 End Function
+
+'--- IsAllocated_Long ---
+' 概要: この手続きの役割を説明します。
+' 引数:
+'   ByRef arr(  … 用途を指定します。
 
 Public Function IsAllocated_Long(ByRef arr() As Long) As Boolean
     On Error GoTo EH
