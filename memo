@@ -1,123 +1,31 @@
-了解です。コードを踏まえて、いただいた3点の課題に “いまの仕組みに沿った最小修正” で解決する案をまとめました。必要な理由の根拠は該当モジュールの実装箇所を行番号つきで引用します。
-
-⸻
-
-① 改行ではなくカンマ区切りにしたい
-
-現状
-Definitions は「行ごとに評価 → 非空だけを vbLf で連結」する実装です（行連結の生成は Definitions → BuildDefinitionTemplateFromSheet、評価時の各行処理は SplitExprToLines と IF 処理で行単位の文字列を返す設計）。そのため、複数行を書くと必ず改行で結合されます。 ￼  ￼  ￼
-
-提案（軽量拡張）
-EvaluateExpr の最後で「結合区切り」を差し替えできるようにします。やり方は先頭行にディレクティブを書く方式がシンプルです。
-	•	Definitions の先頭行に
-JOIN(", ")
-と1行だけ置いておき、評価時にこの行を拾って区切り文字を, に変更、以降の行で生成した結果の vbLf を最後に置換します（デフォルトは従来どおり vbLf）。
-
-実装ポイント
-	•	EvaluateExpr（EXPRモードの本体）で
-	1.	SplitExprToLines(def) で得た行の先頭に JOIN( があるか検査
-	2.	あれば区切り = StripQuotes(…) で取り出す
-	3.	以降の行から作った acc の vbLf をその区切りに Replace
-を追加します。
-SplitExprToLines はすでに | も改行扱いにしてくれるので、見た目の管理は従来通りです。 ￼
-
-使い方（Definitions の例）
-
-JOIN(", ")
-IF({pcm_t_キャンペーン.対象カード_プロパー}=1,"プロパー","")
-IF({pcm_t_キャンペーン.対象カード_FC}=1,"FC","")
-IF({pcm_t_キャンペーン.対象カード_海外}=1,"海外（詳細）","")
-IF({pcm_t_キャンペーン.対象カード_詳細}="","",({pcm_t_キャンペーン.対象カード_詳細}))
-
-→ 出力: プロパー, FC, 海外（詳細）
-（JOIN 行を外せば従来通り改行結合）
-
-⸻
-
-② たし算が 0 になる
-
-原因
-式評価で {tbl.col} を数値に置換する関数が値を代入していないため、空文字→0 になっています。
-ReplaceTokensWithRaw / ReplaceTokensProcessedAsNumber の中で、実際にトークン解決する行がコメントアウトされており、valStr が空のまま ToNumberOrZero に渡って 0 になってしまいます。 ￼
-
-該当箇所（抜粋）
-
-' If processed Then
-'     valStr = ResolveTokenProcessed(token, baseTbl, baseRow, myKey, outColIndex)
-' Else
-'     valStr = ResolveTokenRaw(token, baseTbl, baseRow, myKey)
-' End If
-s = Left$(s, pos - 1) & ToNumberOrZero(valStr) & Mid$(s, pos2 + 1)
-
-（ここで valStr が未設定のまま 0 化される）
-
-修正
-上記のコメントアウトを外し、実際に valStr に値を入れてから ToNumberOrZero に渡してください。
-ToNumberOrZero は全角→半角、カンマ・通貨記号除去、％なら小数化までやってくれるので、そのまま四則演算に乗ります。 ￼
-
-確認ポイント
-EXPR モードでは ApplyTransformSmart が EvaluateExpr(..., processed:=True) を呼びます。processed:=True の場合は「中間加工済み値」のトークン解決（ResolveTokenProcessed）が使われます。 ￼  ￼
-
-Definitions の書き方
-ご提示の式で OK です（修正後は 100 + 50 → 150 を返すはずです）：
-
-{pcm_t_景表法遵法チェック結果_一般懸賞.一般懸賞1_6}
-+{pcm_t_景表法遵法チェック結果_一般懸賞.一般懸賞2_6}
-+{pcm_t_景表法遵法チェック結果_一般懸賞.一般懸賞3_6}
-+{pcm_t_景表法遵法チェック結果_総付景品.総付景品1_4}
-+{pcm_t_景表法遵法チェック結果_総付景品.総付景品2_4}
-+{pcm_t_景表法遵法チェック結果_総付景品.総付景品3_4}
+以下のDim experが"0+0+0+0+0"のようになってました。
 
 
-⸻
 
-③ 「A-1」「aー１」「A#1」を一律で「A-1」に正規化したい
-
-やり方は2通りあります。
-
-A) 最小実装で Definitions に書ける関数を増やす
-
-GetScalarValue は LEFT/RIGHT/MID をすでにサポートしているので、ここに文字列関数を追加します（例：UCASE(s), REPLACE(s, old, new)）。構文パースは既存の SplitArgs を流用できます。 ￼  ￼
-	•	UCASE(expr) → UCase$(NormalizeText(GetScalarValue(expr,...)))
-	•	REPLACE(expr, "ー", "-") のように入れ子で複数回呼べます
-	•	既存の NormalizeText は全角→半角 + Trimまで実施（全角英数は半角化されます） ￼
-
-Definitions 例（推奨）
-
-UCASE(
-  REPLACE(
-    REPLACE(
-      REPLACE({元テーブル.元列}, "ー", "-"),
-      "－", "-"
-    ),
-    "#", "-"
-  )
-)
-
-これで
-	•	全角長音/全角ハイフン系（ー/－ など）→ -
-	•	# → -
-	•	全角英数→半角（NormalizeText）
-	•	アルファベットは大文字化（UCASE）
-となり、"aー１" / "A#1" / "Ａ−１" などが**「A-1」**に揃います。
-
-B) グローバルに効かせる（慎重に）
-
-NormalizeText 自体にハイフン類・# の置換と UCase$ を追加する方法もあります。ただしすべての列の文字列正規化に影響するため、影響範囲が大きいです。ピンポイントで使いたいなら A 案（関数追加） をおすすめします。
-
-⸻
-
-変更のサマリ（最小パッチ）
-	1.	カンマ区切り
-	•	EvaluateExpr: JOIN("...") ディレクティブ対応を追加し、最終連結 vbLf を指定区切りに置換（デフォルトは従来どおり改行）。
-根拠: EXPR は行分割・連結で設計（SplitExprToLines） ￼
-	2.	加算が 0 になる
-	•	ReplaceTokensWithRaw / ReplaceTokensProcessedAsNumber のコメントアウトを外す（valStr = ResolveToken... を実行）
-	•	ToNumberOrZero が全角やカンマ・％を面倒みるので、そのまま四則演算可能。 ￼
-	3.	「A-1」への正規化
-	•	GetScalarValue に UCASE と REPLACE を追加（SplitArgs 利用で簡単に実装可）。 ￼  ￼
-	•	Definitions 側は入れ子で REPLACE → 最後に UCASE(...)。
-
-⸻
-
-必要なら、上記3点の差分コード（貼り付け用）もこちらで用意します。
+Public Function EvaluateExpr(def As String, baseTbl As String, baseRow As Long, myKey As String, _
+                             ByVal processed As Boolean, Optional outColIndex As Long = -1) As Variant
+    Dim lines As Collection: Set lines = SplitExprToLines(def)
+    Dim i As Long, one As String, res As String, acc As String
+    For i = 1 To lines.Count
+        one = Trim$(lines(i))
+        If one = "" Then GoTo CONT
+        If HasIFSyntax(one) Then
+            res = EvalIFLine(one, baseTbl, baseRow, myKey, processed, outColIndex)
+            If Len(res) > 0 Then
+                If acc = "" Then acc = res Else acc = acc & vbLf & res
+            End If
+        ElseIf InStr(one, """") > 0 Or InStr(one, "'") > 0 Then
+            res = ApplyTemplate(one, baseTbl, baseRow, myKey, processed, outColIndex)
+            If Len(res) > 0 Then
+                If acc = "" Then acc = res Else acc = acc & vbLf & res
+            End If
+        Else
+            Dim expr As String
+            If processed Then
+                expr = ReplaceTokensProcessedAsNumber(one, baseTbl, baseRow, myKey, outColIndex)
+            Else
+                expr = ReplaceTokensWithRaw(one, baseTbl, baseRow, myKey)
+            End If
+            res = CStr(SafeEval(expr))
+            If acc = "" Then acc = res Else acc = acc & vbLf & res
+        End If
