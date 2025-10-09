@@ -1,31 +1,59 @@
-以下のDim experが"0+0+0+0+0"のようになってました。
+ありがとうございます。原因はそのとおりで、数式用のトークン置換関数が 0 を埋めてしまっているためです。expr が "0+0+0+..." になるのは、置換箇所で実値の取得行がコメントアウトされているのが理由です。
 
+修正ポイント（そのままコピペでOK）
 
+モジュール： modJoinAndEval
+対象関数： ReplaceTokensWithRaw と ReplaceTokensProcessedAsNumber
 
-Public Function EvaluateExpr(def As String, baseTbl As String, baseRow As Long, myKey As String, _
-                             ByVal processed As Boolean, Optional outColIndex As Long = -1) As Variant
-    Dim lines As Collection: Set lines = SplitExprToLines(def)
-    Dim i As Long, one As String, res As String, acc As String
-    For i = 1 To lines.Count
-        one = Trim$(lines(i))
-        If one = "" Then GoTo CONT
-        If HasIFSyntax(one) Then
-            res = EvalIFLine(one, baseTbl, baseRow, myKey, processed, outColIndex)
-            If Len(res) > 0 Then
-                If acc = "" Then acc = res Else acc = acc & vbLf & res
-            End If
-        ElseIf InStr(one, """") > 0 Or InStr(one, "'") > 0 Then
-            res = ApplyTemplate(one, baseTbl, baseRow, myKey, processed, outColIndex)
-            If Len(res) > 0 Then
-                If acc = "" Then acc = res Else acc = acc & vbLf & res
-            End If
-        Else
-            Dim expr As String
-            If processed Then
-                expr = ReplaceTokensProcessedAsNumber(one, baseTbl, baseRow, myKey, outColIndex)
-            Else
-                expr = ReplaceTokensWithRaw(one, baseTbl, baseRow, myKey)
-            End If
-            res = CStr(SafeEval(expr))
-            If acc = "" Then acc = res Else acc = acc & vbLf & res
-        End If
+1) ReplaceTokensWithRaw
+
+Public Function ReplaceTokensWithRaw(def As String, baseTbl As String, baseRow As Long, myKey As String) As String
+    Dim s As String: s = def
+    Dim pos As Long, pos2 As Long, token As String, valStr As String
+    pos = InStr(s, "{")
+    Do While pos > 0
+        pos2 = InStr(pos + 1, s, "}")
+        If pos2 = 0 Then Exit Do
+        token = Mid$(s, pos + 1, pos2 - pos - 1)
+
+        ' ★★★ ここを有効化（実値取得 → 数値化） ★★★
+        valStr = ResolveTokenRaw(token, baseTbl, baseRow, myKey)
+        valStr = ToNumberOrZero(valStr)
+
+        s = Left$(s, pos - 1) & valStr & Mid$(s, pos2 + 1)
+        pos = InStr(pos + Len(valStr), s, "{")
+    Loop
+    ReplaceTokensWithRaw = s
+End Function
+
+2) ReplaceTokensProcessedAsNumber
+
+Public Function ReplaceTokensProcessedAsNumber(def As String, baseTbl As String, baseRow As Long, myKey As String, outColIndex As Long) As String
+    Dim s As String: s = def
+    Dim pos As Long, pos2 As Long, token As String, valStr As String
+    pos = InStr(s, "{")
+    Do While pos > 0
+        pos2 = InStr(pos + 1, s, "}")
+        If pos2 = 0 Then Exit Do
+        token = Mid$(s, pos + 1, pos2 - pos - 1)
+
+        ' ★★★ ここを有効化（加工後の値を取得 → 数値化） ★★★
+        valStr = ResolveTokenProcessed(token, baseTbl, baseRow, myKey, outColIndex)
+        valStr = ToNumberOrZero(valStr)
+
+        s = Left$(s, pos - 1) & valStr & Mid$(s, pos2 + 1)
+        pos = InStr(pos + Len(valStr), s, "{")
+    Loop
+    ReplaceTokensProcessedAsNumber = s
+End Function
+
+※ いま入っている valStr = ToNumberOrZero(valStr) の直前に、必ず ResolveTokenRaw / ResolveTokenProcessed を呼んで実値を入れてください。（コメントアウトを外すだけです）
+
+動作確認のコツ
+	•	EvaluateExpr の SafeEval(expr) を呼ぶ直前に Debug.Print expr を一時的に入れて、
+例：100+50+... のように 0 以外が展開されていることを確認。
+	•	元データが全角数字/カンマ/％でも、ToNumberOrZero が
+全角→半角・カンマ/通貨記号除去・％→小数 を面倒見ます。
+
+これで expr は "100+50+..." のような展開になり、合計が正しく計算されます。
+もしまだ 0 のままなら、該当トークン（{テーブル.列}）が正しく解決できていない可能性があるので、そのときはその列名（見出し）と読み込まれたテーブル名を教えてください。列名の前後空白やBOMはモジュール側で除去していますが、見出し名の完全一致が必要です。
