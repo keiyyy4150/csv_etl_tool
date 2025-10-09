@@ -1,6 +1,15 @@
 Option Explicit
+'============================================================
+' modIO
+' 概要: CSV読み書き・文字コード判定・区切り文字検出・テキストI/O・フォルダ作成などの入出力ユーティリティ。
+'============================================================
 
 '=== 区切り文字の簡易自動判定（1行目のみ・クォート内は概ね考慮） ===
+
+'--- DetectDelimiterFromText ---
+' 概要: CSV先頭行から推定して区切り文字（カンマ/タブ/セミコロン）を返します。
+' 引数:
+'   ByVal txt As String  … CSVテキスト（先頭行を参照）
 Private Function DetectDelimiterFromText(ByVal txt As String) As String
     Dim firstLine As String, p As Long
     p = InStr(txt, vbLf)
@@ -33,10 +42,12 @@ Private Function DetectDelimiterFromText(ByVal txt As String) As String
 
 End Function
 
-
-'==============================
 ' フォルダ作成（存在しなければ作成）
-'==============================
+
+'--- EnsureFolder ---
+' 概要: 存在しない場合はフォルダを作成します。末尾'\'を許容。
+' 引数:
+'   ByVal pathWithSlash As String  … 作成したいフォルダのパス（末尾に'\'推奨）
 Public Sub EnsureFolder(ByVal pathWithSlash As String)
     On Error Resume Next
     If Right$(pathWithSlash, 1) <> "\" Then pathWithSlash = pathWithSlash & "\"
@@ -44,9 +55,12 @@ Public Sub EnsureFolder(ByVal pathWithSlash As String)
     On Error GoTo 0
 End Sub
 
-'==============================
 ' CSV 読み込み（文字コード対応）
-'==============================
+
+'--- ParseCsvFile ---
+' 概要: CSVファイルを読み込み、2次元配列（ヘッダ含む）にして返します。
+' 引数:
+'   filePath As String  … 読み込むCSVのフルパス
 Public Function ParseCsvFile(filePath As String) As Variant
     Dim txt As String
     txt = ReadTextFile(filePath, CurrentEncodingMode) ' AUTO/UTF-8/SHIFT_JIS/UTF-16LE
@@ -54,6 +68,11 @@ Public Function ParseCsvFile(filePath As String) As Variant
 End Function
 
 ' RFC4180 簡易：ダブルクォートと改行を処理
+
+'--- ParseCsvText ---
+' 概要: CSVテキストを解析して2次元配列（ヘッダ含む）に変換します。
+' 引数:
+'   ByVal txt As String  … CSV全体の文字列
 Public Function ParseCsvText(ByVal txt As String) As Variant
     Dim delim As String
     delim = DetectDelimiterFromText(txt)  ' ★ 自動判定
@@ -113,9 +132,13 @@ Public Function ParseCsvText(ByVal txt As String) As Variant
     ParseCsvText = result
 End Function
 
-'==============================
 ' 文字コード：読み（ADODB.Stream + BOM検出）
-'==============================
+
+'--- ReadTextFile ---
+' 概要: 指定エンコードでテキストファイルを読み込みます（AUTOはBOM検出）。
+' 引数:
+'   filePath As String  … ファイルパス
+'   encMode As String  … AUTO/UTF-8/SHIFT_JIS/UTF-16LE
 Public Function ReadTextFile(filePath As String, encMode As String) As String
     Dim mode As String: mode = UCase$(encMode)
     If mode = "AUTO" Or Len(mode) = 0 Then mode = DetectEncoding(filePath)
@@ -136,6 +159,11 @@ Public Function ReadTextFile(filePath As String, encMode As String) As String
     Set stm = Nothing
 End Function
 
+'--- DetectEncoding ---
+' 概要: BOMから推定されるエンコード種別を返します。
+' 引数:
+'   filePath As String  … ファイルパス
+
 Public Function DetectEncoding(filePath As String) As String
     Dim f As Integer, b1 As Byte, b2 As Byte, b3 As Byte
     On Error GoTo FAIL
@@ -155,9 +183,14 @@ FAIL:
     If Len(DetectEncoding) = 0 Then DetectEncoding = "SHIFT_JIS"
 End Function
 
-'==============================
 ' 文字コード：書き（ADODB.Stream）
-'==============================
+
+'--- WriteTextFile ---
+' 概要: 指定エンコードでテキストを書き出します。
+' 引数:
+'   filePath As String  … 出力先パス
+'   ByVal content As String  … 書き出す文字列
+'   encMode As String  … AUTO/UTF-8/SHIFT_JIS/UTF-16LE（AUTOはUTF-8(BOM)）
 Public Sub WriteTextFile(filePath As String, ByVal content As String, encMode As String)
     Dim stm As Object ' ADODB.Stream
     Dim mode As String: mode = UCase$(encMode)
@@ -178,9 +211,14 @@ Public Sub WriteTextFile(filePath As String, ByVal content As String, encMode As
     Set stm = Nothing
 End Sub
 
-'==============================
 ' importFiles から必要CSVを読み込む
-'==============================
+
+'--- LoadAllCsv ---
+' 概要: この手続きの役割を説明します。
+' 引数:
+'   importPath As String  … 用途を指定します。
+'   _
+                           tblNames(  … 用途を指定します。
 Public Function LoadAllCsv(importPath As String, _
                            tblNames() As String, _
                            ByRef dict As Object) As Boolean
@@ -239,9 +277,12 @@ FAIL:
     LoadAllCsv = False
 End Function
 
-'==============================
 ' テーブル（ListObject）を探すユーティリティ
-'==============================
+
+'--- GetListObjectByName ---
+' 概要: この手続きの役割を説明します。
+' 引数:
+'   tableName As String  … 用途を指定します。
 Public Function GetListObjectByName(tableName As String) As ListObject
     Dim ws As Worksheet, lo As ListObject
     For Each ws In ThisWorkbook.Worksheets
