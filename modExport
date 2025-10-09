@@ -1,12 +1,17 @@
 Option Explicit
+'============================================================
+' modExport
+' 概要: Masterテーブルの内容をCSVファイルとして出力する機能。RFC4180に準拠した引用・改行対応とエンコード指定に対応します。
+'============================================================
 
-'==============================
 ' CSV 出力（Masterの現在値をそのまま）
 '   ファイル名規則：
 '    - IsProcessed=True         → "proc_＜Base＞_＜B3＞_TS.csv"
 '    - HasRaw=True(未加工)      → "raw_ ＜Base＞_＜B3＞_TS.csv"
 '    - それ以外（初期/手動編集）→ "hd_  ＜Base＞_＜B3＞_TS.csv"
-'==============================
+
+'--- ExportCSV ---
+' 概要: Masterテーブルの現在値をCSVとして出力します。
 Public Sub ExportCSV()
     On Error GoTo EH
     Dim masterLo As ListObject
@@ -56,6 +61,13 @@ EH:
 End Sub
 
 '=== CSV書き出し（値→RFC4180, 引用/改行対応, エンコード） ===
+
+'--- WriteRangeAsCsvWithEncoding ---
+' 概要: ListObjectの範囲をRFC4180準拠でCSV化し、指定エンコードで保存します。
+' 引数:
+'   lo As ListObject  … 出力対象のListObject（ヘッダ＋データ）
+'   filePath As String  … 出力先のフルパス
+'   encMode As String  … エンコード（AUTO/UTF-8/SHIFT_JIS/UTF-16LE）
 Public Sub WriteRangeAsCsvWithEncoding(lo As ListObject, filePath As String, encMode As String)
     Dim arr As Variant, rows As Long, cols As Long
     arr = lo.DataBodyRange.Value
