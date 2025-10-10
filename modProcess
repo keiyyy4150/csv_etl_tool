@@ -238,10 +238,12 @@ End Sub
 '=== Runner: Import (PerfGuardから呼ばれる) ===
 Public Sub Run_Import()
     On Error GoTo EH
-    ' 既存のImportFilesをパイプライン指定なしで呼び出し
-    ImportFiles ""
+    Pulse "インポート準備中"
+    ImportFiles pipeLine
+    EndProgress "インポート完了"
     Exit Sub
 EH:
+    EndProgress "インポート中断"
     Err.Raise Err.Number, Err.Source, Err.Description
 End Sub
 
@@ -249,9 +251,11 @@ End Sub
 '=== Runner: Process (PerfGuardから呼ばれる) ===
 Public Sub Run_Process()
     On Error GoTo EH
-    ' 既存のProcessDataをパイプライン指定なしで呼び出し
-    ProcessData ""
+    Pulse "加工準備中"
+    ProcessData pipeLine
+    EndProgress "加工完了"
     Exit Sub
 EH:
+    EndProgress "加工中断"
     Err.Raise Err.Number, Err.Source, Err.Description
 End Sub
