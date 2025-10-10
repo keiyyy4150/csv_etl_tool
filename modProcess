@@ -1,15 +1,6 @@
 Option Explicit
-'============================================================
-' modProcess
-' 概要: パイプラインの切替、Import/Processのワークフロー、Masterテーブルへの貼り付け、エンコード選択等のオーケストレーション。
-'============================================================
 
 '=== 既定行数にマスターの表サイズを戻す（B4セル：行数設定 / 空なら20000） ===
-
-'--- ResetMasterSize ---
-' 概要: Masterテーブルの行数をB4セル値（空は20000）に再設定し、データ部をクリアします。
-' 引数:
-'   masterLo As ListObject  … 対象のMaster ListObject
 Private Sub ResetMasterSize(masterLo As ListObject)
     On Error Resume Next
     If masterLo Is Nothing Then Exit Sub
@@ -26,12 +17,8 @@ Private Sub ResetMasterSize(masterLo As ListObject)
     On Error GoTo 0
 End Sub
 
-'=== 高速クリア：テーブルのデータ部を空に（列構成は維持） ===
 
-'--- FastClearTable ---
-' 概要: ListObjectのデータ行を全削除（列構成は維持）します。
-' 引数:
-'   lo As ListObject  … 対象のListObject
+'=== 高速クリア：テーブルのデータ部を空に（列構成は維持） ===
 Private Sub FastClearTable(lo As ListObject)
     If lo Is Nothing Then Exit Sub
     If lo.DataBodyRange Is Nothing Then
@@ -42,10 +29,10 @@ Private Sub FastClearTable(lo As ListObject)
     lo.DataBodyRange.Delete xlShiftUp
 End Sub
 
-' パイプライン切替（Main / List）
 
-'--- UsePipelineMain ---
-' 概要: パイプラインをMainに設定します。
+'==============================
+' パイプライン切替（Main / List）
+'==============================
 Public Sub UsePipelineMain()
     CurrentMappingTableName = "Mapping_Main"
     CurrentMasterTableName = "Master_Main"
@@ -53,9 +40,6 @@ Public Sub UsePipelineMain()
     AllowOneToMany = False
     WriteLog "INFO", "Switched pipeline: Main"
 End Sub
-
-'--- UsePipelineList ---
-' 概要: パイプラインをListに設定します。
 
 Public Sub UsePipelineList()
     CurrentMappingTableName = "Mapping_List"
@@ -65,10 +49,9 @@ Public Sub UsePipelineList()
     WriteLog "INFO", "Switched pipeline: List"
 End Sub
 
+'==============================
 ' エンコード選択
-
-'--- ChooseEncoding ---
-' 概要: 読み書き用のエンコードを入力値から設定します。
+'==============================
 Public Sub ChooseEncoding()
     Dim s As String
     s = InputBox( _
@@ -88,12 +71,9 @@ Public Sub ChooseEncoding()
     MsgBox "Encoding Mode: " & CurrentEncodingMode, vbInformation
 End Sub
 
+'==============================
 ' Import：CSV読込→キー索引→JOIN（無加工）→Master貼付
-
-'--- ImportFiles ---
-' 概要: CSVの読み込み→フィルタ適用→キー索引生成→無加工JOIN→Master貼付までを実行します。
-' 引数:
-'   pipeline  … パイプライン名 'Main' または 'List'（空は現設定のまま）
+'==============================
 Public Sub ImportFiles(pipeline)
     On Error GoTo EH
     Dim tStart As Date: tStart = Now
@@ -146,12 +126,9 @@ EH:
     MsgBox "ImportFilesでエラー: " & Err.Description, vbCritical
 End Sub
 
+'==============================
 ' Process：加工適用 → Masterへ
-
-'--- ProcessData ---
-' 概要: RawJoinedに加工を適用（型変換/式評価）してMasterに反映します。
-' 引数:
-'   pipeline  … パイプライン名 'Main' または 'List'（空は現設定のまま）
+'==============================
 Public Sub ProcessData(pipeline)
     On Error GoTo EH
     Dim tStart As Date: tStart = Now
@@ -195,10 +172,9 @@ EH:
     MsgBox "ProcessDataでエラー: " & Err.Description, vbCritical
 End Sub
 
+'==============================
 ' Clear：Masterクリア＆中間データ破棄（安全版）
-
-'--- ClearData ---
-' 概要: この手続きの役割を説明します。
+'==============================
 Public Sub ClearData()
     Dim prevCalc As XlCalculation
     Dim prevEvt As Boolean, prevUpd As Boolean
@@ -239,13 +215,11 @@ FIN:
     Application.ScreenUpdating = prevUpd
 End Sub
 
-' Masterへ貼付（行数だけ合わせて一括代入）
 
-'--- PasteToMasterByTable ---
-' 概要: この手続きの役割を説明します。
-' 引数:
-'   masterTbl As ListObject  … 用途を指定します。
-'   dataArr As Variant  … 用途を指定します。
+
+'==============================
+' Masterへ貼付（行数だけ合わせて一括代入）
+'==============================
 Public Sub PasteToMasterByTable(masterTbl As ListObject, dataArr As Variant)
     Dim rows As Long, cols As Long
     rows = UBound(dataArr, 1): cols = UBound(dataArr, 2)
@@ -258,4 +232,26 @@ Public Sub PasteToMasterByTable(masterTbl As ListObject, dataArr As Variant)
     Set newRange = masterTbl.HeaderRowRange.Resize(rows + 1, cols)
     masterTbl.Resize newRange
     masterTbl.DataBodyRange.Value = dataArr
+End Sub
+
+
+'=== Runner: Import (PerfGuardから呼ばれる) ===
+Public Sub Run_Import()
+    On Error GoTo EH
+    ' 既存のImportFilesをパイプライン指定なしで呼び出し
+    ImportFiles ""
+    Exit Sub
+EH:
+    Err.Raise Err.Number, Err.Source, Err.Description
+End Sub
+
+
+'=== Runner: Process (PerfGuardから呼ばれる) ===
+Public Sub Run_Process()
+    On Error GoTo EH
+    ' 既存のProcessDataをパイプライン指定なしで呼び出し
+    ProcessData ""
+    Exit Sub
+EH:
+    Err.Raise Err.Number, Err.Source, Err.Description
 End Sub
