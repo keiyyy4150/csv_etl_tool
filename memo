@@ -2,13 +2,12 @@ Option Explicit
 '============================================================
 ' modPerf
 ' 概要: 大量データのインポート/加工の実行時パフォーマンスと進捗表示を補助するユーティリティ。
-'      - WithPerfGuard: 計算/画面更新/イベント/警告を停止して安全実行（終了時に復元）
+'      - WithPerfGuard / WithPerfGuardArgs: 計算/画面更新/イベント/警告を停止して安全実行（終了時に復元）
 '      - 配列→ListObjectへのチャンク書き込み
 '      - CSVの行チャンク読み込み＋即貼付
 '      - 進捗表示API（BeginProgress/StepProgress/Pulse/EndProgress）
 '============================================================
 
-'--- 実行時オプションの退避用 ---
 Private Type TAppState
     calc As XlCalculation
     scr As Boolean
@@ -17,13 +16,12 @@ Private Type TAppState
     stBar As Variant
 End Type
 
-'--- 進捗用の内部状態 ---
 Private mProgTotal As Long
 Private mProgCurrent As Long
 Private mProgLabel As String
 Private mPulseIdx As Long
 
-'================ WithPerfGuard ==============================
+'================ WithPerfGuard (引数なし) ===================
 Public Sub WithPerfGuard(ByVal runBody As String, Optional ByVal showProgress As Boolean = True)
     Dim st As TAppState
     On Error GoTo EH
@@ -41,6 +39,55 @@ Public Sub WithPerfGuard(ByVal runBody As String, Optional ByVal showProgress As
     If showProgress Then Application.StatusBar = "処理を開始しています..."
 
     Application.Run runBody
+
+Done:
+    Application.Calculation = st.calc
+    Application.ScreenUpdating = st.scr
+    Application.EnableEvents = st.evt
+    Application.DisplayAlerts = st.dsp
+    Application.StatusBar = st.stBar
+    Exit Sub
+EH:
+    Application.Calculation = st.calc
+    Application.ScreenUpdating = st.scr
+    Application.EnableEvents = st.evt
+    Application.DisplayAlerts = st.dsp
+    Application.StatusBar = st.stBar
+    Err.Raise Err.Number, Err.Source, Err.Description
+End Sub
+
+'================ WithPerfGuardArgs (引数あり) ================
+' 概要: Application.Run に引数を渡したい場合はこちらを使用
+Public Sub WithPerfGuardArgs(ByVal runBody As String, ByVal showProgress As Boolean, ParamArray args() As Variant)
+    Dim st As TAppState
+    On Error GoTo EH
+
+    st.calc = Application.Calculation
+    st.scr = Application.ScreenUpdating
+    st.evt = Application.EnableEvents
+    st.dsp = Application.DisplayAlerts
+    st.stBar = Application.StatusBar
+
+    Application.ScreenUpdating = False
+    Application.EnableEvents = False
+    Application.DisplayAlerts = False
+    Application.Calculation = xlCalculationManual
+    If showProgress Then Application.StatusBar = "処理を開始しています..."
+
+    ' Application.Run は ParamArray をそのまま渡せないため引数数で分岐
+    Select Case UBound(args)
+        Case -1: Application.Run runBody
+        Case 0:  Application.Run runBody, args(0)
+        Case 1:  Application.Run runBody, args(0), args(1)
+        Case 2:  Application.Run runBody, args(0), args(1), args(2)
+        Case 3:  Application.Run runBody, args(0), args(1), args(2), args(3)
+        Case Else
+            ' 必要なら上限を拡張
+            Dim i As Long
+            Dim a1, a2, a3, a4, a5 As Variant
+            a1 = args(0): a2 = args(1): a3 = args(2): a4 = args(3): a5 = args(4)
+            Application.Run runBody, a1, a2, a3, a4, a5
+    End Select
 
 Done:
     Application.Calculation = st.calc
@@ -277,7 +324,7 @@ EH:
     Err.Raise Err.Number, Err.Source, Err.Description
 End Sub
 
-Public Sub EnsureTableHeader(ByVal lo As ListObject, ByRef headers: Variant)
+Public Sub EnsureTableHeader(ByVal lo As ListObject, ByRef headers As Variant)
     Dim i As Long, needCols As Long, curCols As Long
     needCols = UBound(headers) + 1
     curCols = lo.ListColumns.Count
