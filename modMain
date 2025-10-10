@@ -1,22 +1,12 @@
 Option Explicit
-'============================================================
-' modMain
-' 概要: ボタンやショートカットから各処理（Import/Process/Clear/Export）を呼び出すエントリーポイント。パイプライン切替のUIラッパーも含みます。
-'============================================================
 
 '=== ショートカット割り当て（任意） ===
-
-'--- SetupShortcuts ---
-' 概要: ショートカットキー（Ctrl+Shift+…）を割り当てます。
 Public Sub SetupShortcuts()
     Application.OnKey "^+I", "ImportFiles"   ' Ctrl+Shift+I
     Application.OnKey "^+P", "ProcessData"   ' Ctrl+Shift+P
     Application.OnKey "^+D", "ClearData"     ' Ctrl+Shift+C
     Application.OnKey "^+E", "ExportCSV"     ' Ctrl+Shift+E
 End Sub
-
-'--- RemoveShortcuts ---
-' 概要: 割り当てたショートカットキーを解除します。
 
 Public Sub RemoveShortcuts()
     Application.OnKey "^+I"
@@ -26,52 +16,31 @@ Public Sub RemoveShortcuts()
 End Sub
 
 '=== 画面ボタン用 ===
-
-'--- SetPipeline_Main ---
-' 概要: パイプラインをMainに切り替えます。
 Public Sub SetPipeline_Main()
     UsePipelineMain
     MsgBox "パイプラインを Main に切替えました。", vbInformation
 End Sub
-
-'--- SetPipeline_List ---
-' 概要: パイプラインをListに切り替えます。
 
 Public Sub SetPipeline_List()
     UsePipelineList
     MsgBox "パイプラインを List に切替えました。", vbInformation
 End Sub
 
-'--- Btn_ChooseEncoding ---
-' 概要: エンコード選択ダイアログを開きます。
-
 Public Sub Btn_ChooseEncoding()
     ChooseEncoding
 End Sub
 
-'--- Btn_Import ---
-' 概要: ImportFilesをUIから呼び出します。
-
 Public Sub Btn_Import()
-    ImportFiles
+    WithPerfGuard "modProcess.Run_Import"
 End Sub
-
-'--- Btn_Process ---
-' 概要: ProcessDataをUIから呼び出します。
 
 Public Sub Btn_Process()
-    ProcessData
+    WithPerfGuard "modProcess.Run_Process"
 End Sub
-
-'--- Btn_Clear ---
-' 概要: Masterの内容をクリアします。
 
 Public Sub Btn_Clear()
     ClearData
 End Sub
-
-'--- Btn_Export ---
-' 概要: ExportCSVをUIから呼び出します。
 
 Public Sub Btn_Export()
     ExportCSV
