@@ -236,7 +236,7 @@ End Sub
 
 
 '=== Runner: Import (PerfGuardから呼ばれる) ===
-Public Sub Run_Import()
+Public Sub Run_Import(ByVal pipeLine As String)
     On Error GoTo EH
     Pulse "インポート準備中"
     ImportFiles pipeLine
@@ -249,7 +249,7 @@ End Sub
 
 
 '=== Runner: Process (PerfGuardから呼ばれる) ===
-Public Sub Run_Process()
+Public Sub Run_Process(ByVal pipeLine As String)
     On Error GoTo EH
     Pulse "加工準備中"
     ProcessData pipeLine
