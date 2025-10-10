@@ -31,11 +31,11 @@ Public Sub Btn_ChooseEncoding()
 End Sub
 
 Public Sub Btn_Import()
-    WithPerfGuard "modProcess.Run_Import"
+    WithPerfGuardArgs "modProcess.Run_Import", True, pipeLine
 End Sub
 
 Public Sub Btn_Process()
-    WithPerfGuard "modProcess.Run_Process"
+    WithPerfGuardArgs "modProcess.Run_Process", True, pipeLine
 End Sub
 
 Public Sub Btn_Clear()
