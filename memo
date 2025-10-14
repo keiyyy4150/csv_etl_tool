@@ -3,9 +3,7 @@ param(
     [int]    $NonTargetCount  = 700,                        # 対象外件数
     [int]    $YearForSeq      = 25,                         # SEQの年度（K25-xxxx の25部分）
     [string] $OutPath         = "campaign_test_data.csv",   # 出力CSV
-    [int]    $Seed            = 42,                         # 乱数シード（再現性）
-    [ValidateRange(1,5)]
-    [int]    $NumPeriods      = 1                           # ①〜⑤の何期まで埋めるか（1〜5）
+    [int]    $Seed            = 42                          # 乱数シード（再現性）
 )
 
 # 乱数
@@ -27,21 +25,33 @@ $discountCondSamples = @("税込5,000円以上の利用","初回利用限定","�
 $discountDetailSamples = @("10%OFFクーポン","ポイント500P付与","キャッシュバック500円")
 $infoFlagSamples = @("","1","0")
 
-# ヘルパー
-function New-DateRange {
-    # 2025年内の開始日 + 7〜60日
-    $startOffset = $rand.Next(0, 331)               # 0..330
-    $start = [DateTime]::new(2025,1,1).AddDays($startOffset)
-    $len = $rand.Next(7, 61)                        # 7..60
-    $end = $start.AddDays($len)
-    [pscustomobject]@{ Start = $start; End = $end }
-}
+# ---- ヘルパー ----
 function MultiPick([string[]]$options, [int]$min, [int]$max) {
     $n = $rand.Next($min, $max + 1)
     $picks = $options | Sort-Object { $rand.Next() } | Select-Object -First $n
     ($picks -join "`n")
 }
 function SinglePick([string[]]$options) { $options[$rand.Next(0, $options.Count)] }
+
+function New-DateRanges {
+    # 期別（①〜⑤）を必ず作る。各期は前期の終了日の後ろに並ぶ
+    $ranges = @()
+    # ベース開始日：2025/1/1〜2025/12/01 の間から適当に（厳密に年内完結は保証しません）
+    $currStart = [DateTime]::new(2025,1,1).AddDays($rand.Next(0, 335))   # 0..334
+
+    for ($i=1; $i -le 5; $i++) {
+        $lenDays = $rand.Next(7, 61)      # 7..60
+        $start   = $currStart
+        $end     = $start.AddDays($lenDays)
+        $ranges += ,([pscustomobject]@{ Start = $start; End = $end })
+
+        # 次期の開始 = 今期終了 + ギャップ 0..20 日
+        $gapDays = $rand.Next(0, 21)
+        $currStart = $end.AddDays($gapDays)
+    }
+    return $ranges
+}
+
 function MakeCampaignName($tpl) {
     $purposeFirst = ($tpl["キャンペーン目的"] -split "`n")[0]
     $cardFirst    = ($tpl["対象カード"]       -split "`n")[0]
@@ -49,8 +59,8 @@ function MakeCampaignName($tpl) {
     $season = @("春","夏","秋","冬")[$rand.Next(0,4)]
     "$season の$purposeFirst×$cardFirst・$memberFirst キャンペーン2025"
 }
+
 function New-Template {
-    # 期別（①〜⑤）の日付を用意（NumPeriods 以外は空）
     $tpl = @{
         "キャンペーン目的"       = MultiPick $purposes 1 3
         "対象カード"             = MultiPick $cards 1 3
@@ -58,20 +68,17 @@ function New-Template {
         "対象加盟店"             = SinglePick $merchants
         "インセンティブ付与方法" = MultiPick $incentives 1 2
     }
-    # ①〜⑤
-    foreach ($idx in 1..5) {
-        $label = [string]([char](0x2460 + $idx - 1))   # ①②③④⑤
-        if ($idx -le $NumPeriods) {
-            $r = New-DateRange
-            $tpl["キャンペーン開始日$label"] = $r.Start
-            $tpl["キャンペーン終了日$label"] = $r.End
-        } else {
-            $tpl["キャンペーン開始日$label"] = ""
-            $tpl["キャンペーン終了日$label"] = ""
-        }
+    # ①〜⑤を順番通りに付与
+    $labels = @("①","②","③","④","⑤")
+    $ranges = New-DateRanges
+    for ($i=0; $i -lt 5; $i++) {
+        $label = $labels[$i]
+        $tpl["キャンペーン開始日$label"] = $ranges[$i].Start
+        $tpl["キャンペーン終了日$label"] = $ranges[$i].End
     }
     $tpl
 }
+
 function MakeRecord([int]$seqNum, [string]$flag, $template) {
     $dept        = SinglePick $depts
     $app         = SinglePick $applicants
@@ -117,11 +124,11 @@ function MakeRecord([int]$seqNum, [string]$flag, $template) {
         "SEQ"                    = $seqText
         "値引き等付与条件"       = $discountCond
         "値引き等詳細"           = $discountDetail
-        "重複チェックフラグ"     = $flag   # ※重複検知とは無関係。ここでは単に「対象/対象外」の目印に使っています
+        "重複チェックフラグ"     = $flag   # ここでは「対象/対象外」の目印用途のみ
     }
 }
 
-# ===== 生成 =====
+# ---- 生成 ----
 $records = New-Object System.Collections.Generic.List[object]
 
 # 対象（1..TargetCount）
@@ -130,7 +137,7 @@ for ($i = 1; $i -le $TargetCount; $i++) {
     $records.Add( (MakeRecord -seqNum $i -flag "対象" -template $tpl) )
 }
 
-# 対象外（TargetCount+1 .. TargetCount+NonTargetCount）
+# 対象外（TargetCount+1 .. +NonTargetCount）
 for ($j = 1; $j -le $NonTargetCount; $j++) {
     $tpl = New-Template
     $seq = $TargetCount + $j
@@ -139,4 +146,4 @@ for ($j = 1; $j -le $NonTargetCount; $j++) {
 
 # CSV 出力（UTF-8 with BOM）
 $records | Export-Csv -Path $OutPath -NoTypeInformation -Encoding utf8BOM
-Write-Host "Done: $($records.Count) rows -> $OutPath (Targets=$TargetCount, NonTargets=$NonTargetCount, NumPeriods=$NumPeriods)"
+Write-Host "Done: $($records.Count) rows -> $OutPath"
