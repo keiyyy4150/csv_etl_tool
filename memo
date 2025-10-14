@@ -1,52 +1,174 @@
-以下のPowerShellスクリプト合ってますか？
+param(
+    [int]    $TargetCount     = 30,
+    [int]    $NonTargetCount  = 700,
+    [double] $DuplicateRatio  = 0.20,    # 対象外のうち、対象と完全一致の“重複”にする比率
+    [int]    $YearForSeq      = 25,      # SEQの年度（K25-xxxx の25部分）
+    [string] $OutPath         = "campaign_test_data.csv",
+    [int]    $Seed            = 42
+)
 
-param( [int]$TargetCount = 30, [int]$NonTargetCount = 700, [double]$DuplicateRatio = 0.20, # 対象外のうち、対象と完全一致の重複にする比率 [int]$YearForSeq = 25, # SEQの年度（K25-xxxx の25部分） [string]$OutPath = "campaign_test_data.csv", [int]$Seed = 42 )
-乱数（再現性のためシード固定）
+# 乱数（再現性のためシード固定）
 $rand = [System.Random]::new($Seed)
-選択肢
-$purposes = @("入会","登録促進","利用促進","その他") $cards = @("プロパー","提携","FC","受託","開放先","海外","AAAブランド全て","デビット","プリぺ","対象カードなし（オープン懸賞）","その他") $members = @("本会員","家族会員","法人","その他") $merchants = @("全加盟店","特定の加盟店","対象なし") $incentives = @("オープン懸賞","一般懸賞","総付景品","値引き等")
-$depts = @("営業推進部","マーケティング部","営業企画部","法人営業部","デジタル戦略部","プロダクト企画部","加盟店推進部") $applicants = @("佐藤太郎","鈴木花子","高橋健","田中美咲","伊藤翔","渡辺麻衣","山本大輔","中村彩","小林悠","加藤真","吉田舞") $statuses = @("企画中","実施前","実施中","終了") $merchantNames = @("ABC電器","XYZスーパー","Cafe Sakura","Hotel Tokyo","OnlineShop 123","BookStore Hana","Beauty Salon Lumiere") $cardDetailSamples = @("ゴールド","プラチナ","クラシック","学生","法人専用",) $memberOtherSamples = @("新規入会者のみ","既存会員限定","地域限定",) $discountCondSamples = @("税込5,000円以上の利用","初回利用限定","オンライン決済のみ",) $discountDetailSamples = @("10%OFFクーポン","ポイント500P付与","キャッシュバック500円",) $infoFlagSamples = @("","1","0")
-ヘルパー
-function New-DateRange { # 2025年内の開始日 + 7〜60日 $startOffset = $rand.Next(0, 331) # 0..330 $start = [DateTime]::new(2025,1,1).AddDays($startOffset) $len = $rand.Next(7, 61) # 7..60 $end = $start.AddDays($len) [pscustomobject]@ }
-function MultiPick([string[]]$options, [int]$min, [int]$max) { $n = $rand.Next($min, $max + 1) # シャッフルして先頭n件を選択（重複なし） $picks = $options | Sort-Object { $rand.Next() } | Select-Object -First $n # セル内改行で結合 return ($picks -join "`n") }
-function SinglePick([string[]]$options) { return $options[$rand.Next(0, $options.Count)] }
-function MakeCampaignName($tpl) { $purposeFirst = ($tpl["キャンペーン目的"] -split "n")[0] $cardFirst = ($tpl["対象カード"] -split "n")[0] $memberFirst = ($tpl["対象会員"] -split "`n")[0] $season = @("春","夏","秋","冬")[$rand.Next(0,4)] return "$season の$purposeFirst×$cardFirst・$memberFirst キャンペーン2025" }
-function MakeRecord([int]$seqNum, [string]$flag, $template) { $dept = SinglePick $depts $app = SinglePick $applicants $stat = SinglePick $statuses $campName = MakeCampaignName $template
-$cardDetail = SinglePick $cardDetailSamples
-$memberOther = SinglePick $memberOtherSamples
-$infoFlag = SinglePick $infoFlagSamples
-$discountCond = SinglePick $discountCondSamples
-$discountDetail = SinglePick $discountDetailSamples
 
-$merchantName = if ($template["対象加盟店"] -eq "特定の加盟店") { SinglePick $merchantNames } else { "" }
+# 選択肢
+$purposes = @("入会","登録促進","利用促進","その他")
+$cards = @("プロパー","提携","FC","受託","開放先","海外","AAAブランド全て","デビット","プリぺ","対象カードなし（オープン懸賞）","その他")
+$members = @("本会員","家族会員","法人","その他")
+$merchants = @("全加盟店","特定の加盟店","対象なし")
+$incentives = @("オープン懸賞","一般懸賞","総付景品","値引き等")
+$depts = @("営業推進部","マーケティング部","営業企画部","法人営業部","デジタル戦略部","プロダクト企画部","加盟店推進部")
+$applicants = @("佐藤太郎","鈴木花子","高橋健","田中美咲","伊藤翔","渡辺麻衣","山本大輔","中村彩","小林悠","加藤真","吉田舞")
+$statuses = @("企画中","実施前","実施中","終了")
+$merchantNames = @("ABC電器","XYZスーパー","Cafe Sakura","Hotel Tokyo","OnlineShop 123","BookStore Hana","Beauty Salon Lumiere")
+$cardDetailSamples = @("ゴールド","プラチナ","クラシック","学生","法人専用")
+$memberOtherSamples = @("新規入会者のみ","既存会員限定","地域限定")
+$discountCondSamples = @("税込5,000円以上の利用","初回利用限定","オンライン決済のみ")
+$discountDetailSamples = @("10%OFFクーポン","ポイント500P付与","キャッシュバック500円")
+$infoFlagSamples = @("","1","0")
 
-$seqText = ("K{0:00}-{1:0000}" -f $YearForSeq, $seqNum)
-
-$o = [ordered]@{
-    "文書番号"             = $seqNum
-    "申請部署"             = $dept
-    "申請者"               = $app
-    "キャンペーン名称"     = $campName
-    "キャンペーン開始日"   = $template["キャンペーン開始日"]
-    "キャンペーン終了日"   = $template["キャンペーン終了日"]
-    "キャンペーン状態"     = $stat
-    "キャンペーン目的"     = $template["キャンペーン目的"]
-    "対象カード"           = $template["対象カード"]
-    "対象カード詳細"       = $cardDetail
-    "対象会員"             = $template["対象会員"]
-    "対象会員その他"       = $memberOther
-    "対象加盟店"           = $template["対象加盟店"]
-    "対象加盟店名称"       = $merchantName
-    "インセンティブ付与方法" = $template["インセンティブ付与方法"]
-    "情報統制フラグ"       = $infoFlag
-    "景品総額合計"         = ""
-    "金額指定値引き"       = ""
-    "SEQ"                  = $seqText
-    "値引き等付与条件"     = $discountCond
-    "値引き等詳細"         = $discountDetail
-    "重複チェックフラグ"   = $flag
+# ヘルパー
+function New-DateRange {
+    # 2025年内の開始日 + 7〜60日
+    $startOffset = $rand.Next(0, 331)               # 0..330
+    $start = [DateTime]::new(2025,1,1).AddDays($startOffset)
+    $len = $rand.Next(7, 61)                        # 7..60
+    $end = $start.AddDays($len)
+    [pscustomobject]@{
+        Start = $start
+        End   = $end
+    }
 }
-return [pscustomobject]$o
+
+function MultiPick([string[]]$options, [int]$min, [int]$max) {
+    $n = $rand.Next($min, $max + 1)
+    # シャッフルして先頭 n 件（重複なし）
+    $picks = $options | Sort-Object { $rand.Next() } | Select-Object -First $n
+    # セル内改行で結合（Excel で改行として解釈される）
+    return ($picks -join "`n")
 }
-function New-Template { $dr = New-DateRange return @{ "キャンペーン開始日" = $dr.Start "キャンペーン終了日" = $dr.End "キャンペーン目的" = MultiPick $purposes 1 3 "対象カード" = MultiPick $cards 1 3 "対象会員" = MultiPick $members 1 2 "対象加盟店" = SinglePick $merchants "インセンティブ付与方法" = MultiPick $incentives 1 2 } }
-function KeyString($tpl) { # 重複判定に使うキー（改行を可視化のため \n に置換して結合） $k1 = $tpl["キャンペーン開始日"] $k2 = $tpl["キャンペーン終了日"] $k3 = $tpl["キャンペーン目的"] -replace "n", "\n" $k4 = $tpl["対象カード"] -replace "n", "\n" $k5 = $tpl["対象会員"] -replace "n", "\n" $k6 = $tpl["対象加盟店"] $k7 = $tpl["インセンティブ付与方法"] -replace "n", "\n" return "$k1|||$k2|||$k3|||$k4|||$k5|||$k6|||$k7" }
+
+function SinglePick([string[]]$options) {
+    return $options[$rand.Next(0, $options.Count)]
+}
+
+function MakeCampaignName($tpl) {
+    # 先頭要素（改行区切りの一行目）を使って短い名称に
+    $purposeFirst = ($tpl["キャンペーン目的"] -split "`n")[0]
+    $cardFirst    = ($tpl["対象カード"]       -split "`n")[0]
+    $memberFirst  = ($tpl["対象会員"]         -split "`n")[0]
+    $season = @("春","夏","秋","冬")[$rand.Next(0,4)]
+    return "$season の$purposeFirst×$cardFirst・$memberFirst キャンペーン2025"
+}
+
+function New-Template {
+    $dr = New-DateRange
+    return @{
+        "キャンペーン開始日"     = $dr.Start
+        "キャンペーン終了日"     = $dr.End
+        "キャンペーン目的"       = MultiPick $purposes 1 3
+        "対象カード"             = MultiPick $cards 1 3
+        "対象会員"               = MultiPick $members 1 2
+        "対象加盟店"             = SinglePick $merchants
+        "インセンティブ付与方法" = MultiPick $incentives 1 2
+    }
+}
+
+function KeyString($tpl) {
+    # 重複判定に使うキー（改行は可視化のため \n に置換）
+    $k1 = $tpl["キャンペーン開始日"]
+    $k2 = $tpl["キャンペーン終了日"]
+    $k3 = ($tpl["キャンペーン目的"]       -replace "`n", "\n")
+    $k4 = ($tpl["対象カード"]             -replace "`n", "\n")
+    $k5 = ($tpl["対象会員"]               -replace "`n", "\n")
+    $k6 = $tpl["対象加盟店"]
+    $k7 = ($tpl["インセンティブ付与方法"] -replace "`n", "\n")
+    return "$k1|||$k2|||$k3|||$k4|||$k5|||$k6|||$k7"
+}
+
+function MakeRecord([int]$seqNum, [string]$flag, $template) {
+    $dept        = SinglePick $depts
+    $app         = SinglePick $applicants
+    $stat        = SinglePick $statuses
+    $campName    = MakeCampaignName $template
+    $cardDetail  = SinglePick $cardDetailSamples
+    $memberOther = SinglePick $memberOtherSamples
+    $infoFlag    = SinglePick $infoFlagSamples
+    $discountCond   = SinglePick $discountCondSamples
+    $discountDetail = SinglePick $discountDetailSamples
+
+    $merchantName = if ($template["対象加盟店"] -eq "特定の加盟店") { SinglePick $merchantNames } else { "" }
+    $seqText = ("K{0:00}-{1:0000}" -f $YearForSeq, $seqNum)
+
+    $o = [ordered]@{
+        "文書番号"               = $seqNum
+        "申請部署"               = $dept
+        "申請者"                 = $app
+        "キャンペーン名称"       = $campName
+        "キャンペーン開始日"     = $template["キャンペーン開始日"]
+        "キャンペーン終了日"     = $template["キャンペーン終了日"]
+        "キャンペーン状態"       = $stat
+        "キャンペーン目的"       = $template["キャンペーン目的"]
+        "対象カード"             = $template["対象カード"]
+        "対象カード詳細"         = $cardDetail
+        "対象会員"               = $template["対象会員"]
+        "対象会員その他"         = $memberOther
+        "対象加盟店"             = $template["対象加盟店"]
+        "対象加盟店名称"         = $merchantName
+        "インセンティブ付与方法" = $template["インセンティブ付与方法"]
+        "情報統制フラグ"         = $infoFlag
+        "景品総額合計"           = ""
+        "金額指定値引き"         = ""
+        "SEQ"                    = $seqText
+        "値引き等付与条件"       = $discountCond
+        "値引き等詳細"           = $discountDetail
+        "重複チェックフラグ"     = $flag
+    }
+    return [pscustomobject]$o
+}
+
+# ===== 生成フロー =====
+
+# 対象テンプレートをユニークに確保（KeyString で判定）
+$targetTemplates = @()
+$seenKeys = [System.Collections.Generic.HashSet[string]]::new()
+
+while ($targetTemplates.Count -lt $TargetCount) {
+    $tpl = New-Template
+    $key = KeyString $tpl
+    if ($seenKeys.Add($key)) {
+        $targetTemplates += $tpl
+    }
+}
+
+# 対象レコード
+$records = New-Object System.Collections.Generic.List[object]
+for ($i = 1; $i -le $TargetCount; $i++) {
+    $tpl = $targetTemplates[$i-1]
+    $records.Add( (MakeRecord -seqNum $i -flag "対象" -template $tpl) )
+}
+
+# 対象外のうち、重複にする件数
+$dupCount = [int][math]::Round($NonTargetCount * $DuplicateRatio, 0)
+
+# 対象外（重複）: 対象テンプレートからランダムに選んで完全一致を作る
+for ($j = 1; $j -le $dupCount; $j++) {
+    $tpl = $targetTemplates[$rand.Next(0, $targetTemplates.Count)]
+    $seq = $TargetCount + $j
+    $records.Add( (MakeRecord -seqNum $seq -flag "対象外(重複)" -template $tpl) )
+}
+
+# 対象外（非重複）：新しいテンプレートを作る（対象のキーとは被らないように）
+for ($k = 1; $k -le ($NonTargetCount - $dupCount); $k++) {
+    do {
+        $tpl2 = New-Template
+        $key2 = KeyString $tpl2
+        $unique = -not $seenKeys.Contains($key2)
+    } while (-not $unique)
+    $seenKeys.Add($key2) | Out-Null
+    $seq = $TargetCount + $dupCount + $k
+    $records.Add( (MakeRecord -seqNum $seq -flag "対象外" -template $tpl2) )
+}
+
+# CSV 出力（UTF-8 with BOM、セル内改行はそのままクォートされます）
+$records | Export-Csv -Path $OutPath -NoTypeInformation -Encoding utf8BOM
+Write-Host "Done: $($records.Count) rows -> $OutPath"
