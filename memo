@@ -1,149 +1,80 @@
-param(
-    [int]    $TargetCount     = 30,                         # 対象件数
-    [int]    $NonTargetCount  = 700,                        # 対象外件数
-    [int]    $YearForSeq      = 25,                         # SEQの年度（K25-xxxx の25部分）
-    [string] $OutPath         = "campaign_test_data.csv",   # 出力CSV
-    [int]    $Seed            = 42                          # 乱数シード（再現性）
-)
+そのエラーメッセージは2通りの原因が多いです：
+	1.	本当にマクロが無効（セキュリティ設定/拡張子/MOTW）
+	2.	「そのマクロは使えません or 見つかりません」系（ボタンの割当て先/プロシージャ名や引数の不一致）
 
-# 乱数
-$rand = [System.Random]::new($Seed)
+下から順にチェックすれば必ず直せます。
 
-# 選択肢
-$purposes = @("入会","登録促進","利用促進","その他")
-$cards = @("プロパー","提携","FC","受託","開放先","海外","AAAブランド全て","デビット","プリぺ","対象カードなし（オープン懸賞）","その他")
-$members = @("本会員","家族会員","法人","その他")
-$merchants = @("全加盟店","特定の加盟店","対象なし")
-$incentives = @("オープン懸賞","一般懸賞","総付景品","値引き等")
-$depts = @("営業推進部","マーケティング部","営業企画部","法人営業部","デジタル戦略部","プロダクト企画部","加盟店推進部")
-$applicants = @("佐藤太郎","鈴木花子","高橋健","田中美咲","伊藤翔","渡辺麻衣","山本大輔","中村彩","小林悠","加藤真","吉田舞")
-$statuses = @("企画中","実施前","実施中","終了")
-$merchantNames = @("ABC電器","XYZスーパー","Cafe Sakura","Hotel Tokyo","OnlineShop 123","BookStore Hana","Beauty Salon Lumiere")
-$cardDetailSamples = @("ゴールド","プラチナ","クラシック","学生","法人専用")
-$memberOtherSamples = @("新規入会者のみ","既存会員限定","地域限定")
-$discountCondSamples = @("税込5,000円以上の利用","初回利用限定","オンライン決済のみ")
-$discountDetailSamples = @("10%OFFクーポン","ポイント500P付与","キャッシュバック500円")
-$infoFlagSamples = @("","1","0")
+まず“セキュリティ側”の確認
+	•	拡張子が .xlsm / .xlsb か（.xlsx だとVBAは保存されません）
+	•	ダウンロード/メール由来なら右クリック→プロパティ→「許可する（ブロックの解除）」にチェック（Mark of the Web除去）
+	•	[ファイル]→[オプション]→[トラストセンター]→[トラストセンターの設定]
+	•	[マクロの設定]：最低でも「通知付きでVBAマクロを無効にする」にして、画面上部の黄色バーから有効化してください
+	•	よく使うフォルダは [信頼できる場所] に追加すると安定します
 
-# ---- ヘルパー ----
-function MultiPick([string[]]$options, [int]$min, [int]$max) {
-    $n = $rand.Next($min, $max + 1)
-    $picks = $options | Sort-Object { $rand.Next() } | Select-Object -First $n
-    ($picks -join "`n")
-}
-function SinglePick([string[]]$options) { $options[$rand.Next(0, $options.Count)] }
+次に“呼び出し/割り当て”の確認（ここが今回の可能性大）
 
-function New-DateRanges {
-    # 期別（①〜⑤）を必ず作る。各期は前期の終了日の後ろに並ぶ
-    $ranges = @()
-    # ベース開始日：2025/1/1〜2025/12/01 の間から適当に（厳密に年内完結は保証しません）
-    $currStart = [DateTime]::new(2025,1,1).AddDays($rand.Next(0, 335))   # 0..334
+最近の変更で以下がポイントです：
+	•	Run_Import / Run_Process は「引数あり」の Public Sub です
+→ Alt+F8 のマクロ一覧には出ません／ボタンに直接割り当てることは不可
+→ ボタンは Btn_Import / Btn_Process に割り当ててください
+	•	Btn_Import / Btn_Process の中身は WithPerfGuardArgs …, pipeLine を呼びます（pipeLineは”Main”/“List”）
 
-    for ($i=1; $i -le 5; $i++) {
-        $lenDays = $rand.Next(7, 61)      # 7..60
-        $start   = $currStart
-        $end     = $start.AddDays($lenDays)
-        $ranges += ,([pscustomobject]@{ Start = $start; End = $end })
+' modMain
+Public Sub Btn_Import()
+    WithPerfGuardArgs "modProcess.Run_Import", True, pipeLine
+End Sub
 
-        # 次期の開始 = 今期終了 + ギャップ 0..20 日
-        $gapDays = $rand.Next(0, 21)
-        $currStart = $end.AddDays($gapDays)
-    }
-    return $ranges
-}
+Public Sub Btn_Process()
+    WithPerfGuardArgs "modProcess.Run_Process", True, pipeLine
+End Sub
 
-function MakeCampaignName($tpl) {
-    $purposeFirst = ($tpl["キャンペーン目的"] -split "`n")[0]
-    $cardFirst    = ($tpl["対象カード"]       -split "`n")[0]
-    $memberFirst  = ($tpl["対象会員"]         -split "`n")[0]
-    $season = @("春","夏","秋","冬")[$rand.Next(0,4)]
-    "$season の$purposeFirst×$cardFirst・$memberFirst キャンペーン2025"
-}
 
-function New-Template {
-    $tpl = @{
-        "キャンペーン目的"       = MultiPick $purposes 1 3
-        "対象カード"             = MultiPick $cards 1 3
-        "対象会員"               = MultiPick $members 1 2
-        "対象加盟店"             = SinglePick $merchants
-        "インセンティブ付与方法" = MultiPick $incentives 1 2
-    }
-    # ①〜⑤を順番通りに付与
-    $labels = @("①","②","③","④","⑤")
-    $ranges = New-DateRanges
-    for ($i=0; $i -lt 5; $i++) {
-        $label = $labels[$i]
-        $tpl["キャンペーン開始日$label"] = $ranges[$i].Start
-        $tpl["キャンペーン終了日$label"] = $ranges[$i].End
-    }
-    $tpl
-}
+	•	modPerf（v3）モジュールが必ず存在していること（WithPerfGuardArgs を定義）
+ないと Application.Run 到達前に失敗します
+	•	プロシージャの修飾名が正しいか
+	•	Public Sub Run_Import(ByVal pipeLine As String) が 標準モジュール（Module） modProcess にあり、Private ではない
+	•	Application.Run "modProcess.Run_Import", pipeLine の綴りが一致している
+	•	ボタンの割当て
+	•	（フォームコントロール）ボタン右クリック→**[マクロの登録]**→modMain.Btn_Import（または Btn_Process）を選択
+	•	（ActiveX）クリックイベントで Btn_Import / Btn_Process を呼ぶ
 
-function MakeRecord([int]$seqNum, [string]$flag, $template) {
-    $dept        = SinglePick $depts
-    $app         = SinglePick $applicants
-    $stat        = SinglePick $statuses
-    $campName    = MakeCampaignName $template
-    $cardDetail  = SinglePick $cardDetailSamples
-    $memberOther = SinglePick $memberOtherSamples
-    $infoFlag    = SinglePick $infoFlagSamples
-    $discountCond   = SinglePick $discountCondSamples
-    $discountDetail = SinglePick $discountDetailSamples
-    $merchantName = if ($template["対象加盟店"] -eq "特定の加盟店") { SinglePick $merchantNames } else { "" }
-    $seqText = ("K{0:00}-{1:0000}" -f $YearForSeq, $seqNum)
+それでも出るときの“最短チェックリスト”
+	1.	VBEでコンパイル：Alt+F11 → メニュー [デバッグ]→[VBAProjectのコンパイル]（コンパイルエラーがあると実行前に落ちます）
+	2.	存在確認：VBEのイミディエイトで ?TypeName(pipeLine) など値が入っているかを確認
+	3.	呼び先確認：イミディエイトで Application.Run "modProcess.Run_Import", "Main" を手動実行（実行できれば割当て側の問題）
+	4.	名前衝突回避：同名のモジュール/関数がないか（Run_Import が他でPrivate宣言されていないか）
 
-    [pscustomobject][ordered]@{
-        "文書番号"               = $seqNum
-        "申請部署"               = $dept
-        "申請者"                 = $app
-        "キャンペーン名称"       = $campName
-        "キャンペーン状態"       = $stat
+参考：Run_* / ImportFiles の正しい形（最小再掲）
 
-        "キャンペーン開始日①"   = $template["キャンペーン開始日①"]
-        "キャンペーン終了日①"   = $template["キャンペーン終了日①"]
-        "キャンペーン開始日②"   = $template["キャンペーン開始日②"]
-        "キャンペーン終了日②"   = $template["キャンペーン終了日②"]
-        "キャンペーン開始日③"   = $template["キャンペーン開始日③"]
-        "キャンペーン終了日③"   = $template["キャンペーン終了日③"]
-        "キャンペーン開始日④"   = $template["キャンペーン開始日④"]
-        "キャンペーン終了日④"   = $template["キャンペーン終了日④"]
-        "キャンペーン開始日⑤"   = $template["キャンペーン開始日⑤"]
-        "キャンペーン終了日⑤"   = $template["キャンペーン終了日⑤"]
+' modProcess（標準モジュール）
+Public Sub Run_Import(ByVal pipeLine As String)
+    On Error GoTo EH
+    Pulse "インポート準備中"
+    ImportFiles pipeLine
+    EndProgress "インポート完了"
+    Exit Sub
+EH:
+    EndProgress "インポート中断": Err.Raise Err.Number, Err.Source, Err.Description
+End Sub
 
-        "キャンペーン目的"       = $template["キャンペーン目的"]
-        "対象カード"             = $template["対象カード"]
-        "対象カード詳細"         = $cardDetail
-        "対象会員"               = $template["対象会員"]
-        "対象会員その他"         = $memberOther
-        "対象加盟店"             = $template["対象加盟店"]
-        "対象加盟店名称"         = $merchantName
-        "インセンティブ付与方法" = $template["インセンティブ付与方法"]
-        "情報統制フラグ"         = $infoFlag
-        "景品総額合計"           = ""
-        "金額指定値引き"         = ""
-        "SEQ"                    = $seqText
-        "値引き等付与条件"       = $discountCond
-        "値引き等詳細"           = $discountDetail
-        "重複チェックフラグ"     = $flag   # ここでは「対象/対象外」の目印用途のみ
-    }
-}
+Public Sub Run_Process(ByVal pipeLine As String)
+    On Error GoTo EH
+    Pulse "加工準備中"
+    ProcessData pipeLine
+    EndProgress "加工完了"
+    Exit Sub
+EH:
+    EndProgress "加工中断": Err.Raise Err.Number, Err.Source, Err.Description
+End Sub
 
-# ---- 生成 ----
-$records = New-Object System.Collections.Generic.List[object]
+' modMain（標準モジュール）
+Public Sub Btn_Import()
+    WithPerfGuardArgs "modProcess.Run_Import", True, pipeLine   ' "Main"/"List" を渡す
+End Sub
 
-# 対象（1..TargetCount）
-for ($i = 1; $i -le $TargetCount; $i++) {
-    $tpl = New-Template
-    $records.Add( (MakeRecord -seqNum $i -flag "対象" -template $tpl) )
-}
+Public Sub Btn_Process()
+    WithPerfGuardArgs "modProcess.Run_Process", True, pipeLine
+End Sub
 
-# 対象外（TargetCount+1 .. +NonTargetCount）
-for ($j = 1; $j -le $NonTargetCount; $j++) {
-    $tpl = New-Template
-    $seq = $TargetCount + $j
-    $records.Add( (MakeRecord -seqNum $seq -flag "対象外" -template $tpl) )
-}
-
-# CSV 出力（UTF-8 with BOM）
-$records | Export-Csv -Path $OutPath -NoTypeInformation -Encoding utf8BOM
-Write-Host "Done: $($records.Count) rows -> $OutPath"
+もしご希望なら、**現在のブックに合わせてボタン割当て済み・綴り揃え済みの“最終差分”**を作ってお渡しします。
+（今の pipeLine の定義場所、ボタンがフォーム or ActiveX か、をご連絡いただければ、そこまで含めて調整します。）
