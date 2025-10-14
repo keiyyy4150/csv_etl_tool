@@ -1,13 +1,14 @@
 param(
-    [int]    $TargetCount     = 30,
-    [int]    $NonTargetCount  = 700,
-    [double] $DuplicateRatio  = 0.20,    # 対象外のうち、対象と完全一致の“重複”にする比率
-    [int]    $YearForSeq      = 25,      # SEQの年度（K25-xxxx の25部分）
-    [string] $OutPath         = "campaign_test_data.csv",
-    [int]    $Seed            = 42
+    [int]    $TargetCount     = 30,                         # 対象件数
+    [int]    $NonTargetCount  = 700,                        # 対象外件数
+    [int]    $YearForSeq      = 25,                         # SEQの年度（K25-xxxx の25部分）
+    [string] $OutPath         = "campaign_test_data.csv",   # 出力CSV
+    [int]    $Seed            = 42,                         # 乱数シード（再現性）
+    [ValidateRange(1,5)]
+    [int]    $NumPeriods      = 1                           # ①〜⑤の何期まで埋めるか（1〜5）
 )
 
-# 乱数（再現性のためシード固定）
+# 乱数
 $rand = [System.Random]::new($Seed)
 
 # 選択肢
@@ -33,58 +34,44 @@ function New-DateRange {
     $start = [DateTime]::new(2025,1,1).AddDays($startOffset)
     $len = $rand.Next(7, 61)                        # 7..60
     $end = $start.AddDays($len)
-    [pscustomobject]@{
-        Start = $start
-        End   = $end
-    }
+    [pscustomobject]@{ Start = $start; End = $end }
 }
-
 function MultiPick([string[]]$options, [int]$min, [int]$max) {
     $n = $rand.Next($min, $max + 1)
-    # シャッフルして先頭 n 件（重複なし）
     $picks = $options | Sort-Object { $rand.Next() } | Select-Object -First $n
-    # セル内改行で結合（Excel で改行として解釈される）
-    return ($picks -join "`n")
+    ($picks -join "`n")
 }
-
-function SinglePick([string[]]$options) {
-    return $options[$rand.Next(0, $options.Count)]
-}
-
+function SinglePick([string[]]$options) { $options[$rand.Next(0, $options.Count)] }
 function MakeCampaignName($tpl) {
-    # 先頭要素（改行区切りの一行目）を使って短い名称に
     $purposeFirst = ($tpl["キャンペーン目的"] -split "`n")[0]
     $cardFirst    = ($tpl["対象カード"]       -split "`n")[0]
     $memberFirst  = ($tpl["対象会員"]         -split "`n")[0]
     $season = @("春","夏","秋","冬")[$rand.Next(0,4)]
-    return "$season の$purposeFirst×$cardFirst・$memberFirst キャンペーン2025"
+    "$season の$purposeFirst×$cardFirst・$memberFirst キャンペーン2025"
 }
-
 function New-Template {
-    $dr = New-DateRange
-    return @{
-        "キャンペーン開始日"     = $dr.Start
-        "キャンペーン終了日"     = $dr.End
+    # 期別（①〜⑤）の日付を用意（NumPeriods 以外は空）
+    $tpl = @{
         "キャンペーン目的"       = MultiPick $purposes 1 3
         "対象カード"             = MultiPick $cards 1 3
         "対象会員"               = MultiPick $members 1 2
         "対象加盟店"             = SinglePick $merchants
         "インセンティブ付与方法" = MultiPick $incentives 1 2
     }
+    # ①〜⑤
+    foreach ($idx in 1..5) {
+        $label = [string]([char](0x2460 + $idx - 1))   # ①②③④⑤
+        if ($idx -le $NumPeriods) {
+            $r = New-DateRange
+            $tpl["キャンペーン開始日$label"] = $r.Start
+            $tpl["キャンペーン終了日$label"] = $r.End
+        } else {
+            $tpl["キャンペーン開始日$label"] = ""
+            $tpl["キャンペーン終了日$label"] = ""
+        }
+    }
+    $tpl
 }
-
-function KeyString($tpl) {
-    # 重複判定に使うキー（改行は可視化のため \n に置換）
-    $k1 = $tpl["キャンペーン開始日"]
-    $k2 = $tpl["キャンペーン終了日"]
-    $k3 = ($tpl["キャンペーン目的"]       -replace "`n", "\n")
-    $k4 = ($tpl["対象カード"]             -replace "`n", "\n")
-    $k5 = ($tpl["対象会員"]               -replace "`n", "\n")
-    $k6 = $tpl["対象加盟店"]
-    $k7 = ($tpl["インセンティブ付与方法"] -replace "`n", "\n")
-    return "$k1|||$k2|||$k3|||$k4|||$k5|||$k6|||$k7"
-}
-
 function MakeRecord([int]$seqNum, [string]$flag, $template) {
     $dept        = SinglePick $depts
     $app         = SinglePick $applicants
@@ -95,18 +82,27 @@ function MakeRecord([int]$seqNum, [string]$flag, $template) {
     $infoFlag    = SinglePick $infoFlagSamples
     $discountCond   = SinglePick $discountCondSamples
     $discountDetail = SinglePick $discountDetailSamples
-
     $merchantName = if ($template["対象加盟店"] -eq "特定の加盟店") { SinglePick $merchantNames } else { "" }
     $seqText = ("K{0:00}-{1:0000}" -f $YearForSeq, $seqNum)
 
-    $o = [ordered]@{
+    [pscustomobject][ordered]@{
         "文書番号"               = $seqNum
         "申請部署"               = $dept
         "申請者"                 = $app
         "キャンペーン名称"       = $campName
-        "キャンペーン開始日"     = $template["キャンペーン開始日"]
-        "キャンペーン終了日"     = $template["キャンペーン終了日"]
         "キャンペーン状態"       = $stat
+
+        "キャンペーン開始日①"   = $template["キャンペーン開始日①"]
+        "キャンペーン終了日①"   = $template["キャンペーン終了日①"]
+        "キャンペーン開始日②"   = $template["キャンペーン開始日②"]
+        "キャンペーン終了日②"   = $template["キャンペーン終了日②"]
+        "キャンペーン開始日③"   = $template["キャンペーン開始日③"]
+        "キャンペーン終了日③"   = $template["キャンペーン終了日③"]
+        "キャンペーン開始日④"   = $template["キャンペーン開始日④"]
+        "キャンペーン終了日④"   = $template["キャンペーン終了日④"]
+        "キャンペーン開始日⑤"   = $template["キャンペーン開始日⑤"]
+        "キャンペーン終了日⑤"   = $template["キャンペーン終了日⑤"]
+
         "キャンペーン目的"       = $template["キャンペーン目的"]
         "対象カード"             = $template["対象カード"]
         "対象カード詳細"         = $cardDetail
@@ -121,54 +117,26 @@ function MakeRecord([int]$seqNum, [string]$flag, $template) {
         "SEQ"                    = $seqText
         "値引き等付与条件"       = $discountCond
         "値引き等詳細"           = $discountDetail
-        "重複チェックフラグ"     = $flag
-    }
-    return [pscustomobject]$o
-}
-
-# ===== 生成フロー =====
-
-# 対象テンプレートをユニークに確保（KeyString で判定）
-$targetTemplates = @()
-$seenKeys = [System.Collections.Generic.HashSet[string]]::new()
-
-while ($targetTemplates.Count -lt $TargetCount) {
-    $tpl = New-Template
-    $key = KeyString $tpl
-    if ($seenKeys.Add($key)) {
-        $targetTemplates += $tpl
+        "重複チェックフラグ"     = $flag   # ※重複検知とは無関係。ここでは単に「対象/対象外」の目印に使っています
     }
 }
 
-# 対象レコード
+# ===== 生成 =====
 $records = New-Object System.Collections.Generic.List[object]
+
+# 対象（1..TargetCount）
 for ($i = 1; $i -le $TargetCount; $i++) {
-    $tpl = $targetTemplates[$i-1]
+    $tpl = New-Template
     $records.Add( (MakeRecord -seqNum $i -flag "対象" -template $tpl) )
 }
 
-# 対象外のうち、重複にする件数
-$dupCount = [int][math]::Round($NonTargetCount * $DuplicateRatio, 0)
-
-# 対象外（重複）: 対象テンプレートからランダムに選んで完全一致を作る
-for ($j = 1; $j -le $dupCount; $j++) {
-    $tpl = $targetTemplates[$rand.Next(0, $targetTemplates.Count)]
+# 対象外（TargetCount+1 .. TargetCount+NonTargetCount）
+for ($j = 1; $j -le $NonTargetCount; $j++) {
+    $tpl = New-Template
     $seq = $TargetCount + $j
-    $records.Add( (MakeRecord -seqNum $seq -flag "対象外(重複)" -template $tpl) )
+    $records.Add( (MakeRecord -seqNum $seq -flag "対象外" -template $tpl) )
 }
 
-# 対象外（非重複）：新しいテンプレートを作る（対象のキーとは被らないように）
-for ($k = 1; $k -le ($NonTargetCount - $dupCount); $k++) {
-    do {
-        $tpl2 = New-Template
-        $key2 = KeyString $tpl2
-        $unique = -not $seenKeys.Contains($key2)
-    } while (-not $unique)
-    $seenKeys.Add($key2) | Out-Null
-    $seq = $TargetCount + $dupCount + $k
-    $records.Add( (MakeRecord -seqNum $seq -flag "対象外" -template $tpl2) )
-}
-
-# CSV 出力（UTF-8 with BOM、セル内改行はそのままクォートされます）
+# CSV 出力（UTF-8 with BOM）
 $records | Export-Csv -Path $OutPath -NoTypeInformation -Encoding utf8BOM
-Write-Host "Done: $($records.Count) rows -> $OutPath"
+Write-Host "Done: $($records.Count) rows -> $OutPath (Targets=$TargetCount, NonTargets=$NonTargetCount, NumPeriods=$NumPeriods)"
