@@ -1,4 +1,8 @@
 Option Explicit
+'============================================================
+' modProcess
+' 概要: パイプラインの切替、Import/Processのワークフロー、Masterテーブルへの貼り付け、エンコード選択等のオーケストレーション。
+'============================================================
 
 '=== 既定行数にマスターの表サイズを戻す（B4セル：行数設定 / 空なら20000） ===
 Private Sub ResetMasterSize(masterLo As ListObject)
@@ -74,14 +78,14 @@ End Sub
 '==============================
 ' Import：CSV読込→キー索引→JOIN（無加工）→Master貼付
 '==============================
-Public Sub ImportFiles(pipeline)
+Public Sub ImportFiles(pipeLine)
     On Error GoTo EH
     Dim tStart As Date: tStart = Now
     
     If Len(CurrentEncodingMode) = 0 Then CurrentEncodingMode = "AUTO"
-    If pipeline = "Main" Then
+    If pipeLine = "Main" Then
         UsePipelineMain
-    ElseIf pipeline = "List" Then
+    ElseIf pipeLine = "List" Then
         UsePipelineList
     End If
     
@@ -129,7 +133,7 @@ End Sub
 '==============================
 ' Process：加工適用 → Masterへ
 '==============================
-Public Sub ProcessData(pipeline)
+Public Sub ProcessData(pipeLine)
     On Error GoTo EH
     Dim tStart As Date: tStart = Now
     If Not HasRaw Then
@@ -138,9 +142,9 @@ Public Sub ProcessData(pipeline)
     End If
     
     If Len(CurrentEncodingMode) = 0 Then CurrentEncodingMode = "AUTO"
-    If pipeline = "Main" Then
+    If pipeLine = "Main" Then
         UsePipelineMain
-    ElseIf pipeline = "List" Then
+    ElseIf pipeLine = "List" Then
         UsePipelineList
     End If
     
