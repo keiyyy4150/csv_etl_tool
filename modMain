@@ -1,4 +1,8 @@
 Option Explicit
+'============================================================
+' modMain
+' 概要: ボタンやショートカットから各処理（Import/Process/Clear/Export）を呼び出すエントリーポイント。パイプライン切替のUIラッパーも含みます。
+'============================================================
 
 '=== ショートカット割り当て（任意） ===
 Public Sub SetupShortcuts()
@@ -30,11 +34,11 @@ Public Sub Btn_ChooseEncoding()
     ChooseEncoding
 End Sub
 
-Public Sub Btn_Import()
+Public Sub Btn_Import(pipeLine)
     WithPerfGuardArgs "modProcess.Run_Import", True, pipeLine
 End Sub
 
-Public Sub Btn_Process()
+Public Sub Btn_Process(pipeLine)
     WithPerfGuardArgs "modProcess.Run_Process", True, pipeLine
 End Sub
 
