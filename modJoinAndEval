@@ -364,9 +364,9 @@ End Function
 '   baseTbl As String  … ベーステーブル名
 '   baseRow As Long  … ベース行（配列の行番号）
 '   myKey As String  … 複合キー文字列
-'   _
+' _
                                   Optional matchIndex As Long = 1  … 用途を指定します。
-'   _
+' _
                                   Optional forceJoinMultiple As Boolean = False  … 用途を指定します。
 Public Function BuildValueModeRaw(colIndex As Long, baseTbl As String, baseRow As Long, myKey As String, _
                                   Optional matchIndex As Long = 1, _
@@ -436,7 +436,7 @@ End Function
 '   baseTbl As String  … ベーステーブル名
 '   baseRow As Long  … ベース行番号
 '   myKey As String  … 複合キー文字列
-'   _
+' _
                                     Optional matchIndex As Long = 1  … 用途を指定します。
 
 Public Function BuildConcatRawValue(def As String, baseTbl As String, baseRow As Long, myKey As String, _
@@ -459,7 +459,7 @@ End Function
 '   baseTbl As String  … 用途を指定します。
 '   baseRow As Long  … 用途を指定します。
 '   myKey As String  … 用途を指定します。
-'   _
+' _
                                           ByVal matchIndex As Long  … 用途を指定します。
 Private Function ResolveTokenRawWithIndex(token As String, baseTbl As String, baseRow As Long, myKey As String, _
                                           ByVal matchIndex As Long) As String
@@ -501,7 +501,7 @@ End Function
 '   baseTbl As String  … 用途を指定します。
 '   baseRow As Long  … 用途を指定します。
 '   myKey As String  … 用途を指定します。
-'   _
+' _
                                       Optional outColIndex As Long = -1  … 用途を指定します。
 
 Public Function ResolveTokenProcessed(token As String, baseTbl As String, baseRow As Long, myKey As String, _
@@ -565,7 +565,7 @@ End Function
 '   baseTbl As String  … 用途を指定します。
 '   baseRow As Long  … 用途を指定します。
 '   myKey As String  … 用途を指定します。
-'   _
+' _
                          ByVal processed As Boolean  … 用途を指定します。
 '   ByVal outColIndex As Long  … 用途を指定します。
 Private Function EvalSUM(ByVal line As String, baseTbl As String, baseRow As Long, myKey As String, _
@@ -590,7 +590,7 @@ End Function
 '   baseTbl As String  … ベーステーブル名
 '   baseRow As Long  … ベース行番号
 '   myKey As String  … 複合キー文字列
-'   _
+' _
                              ByVal processed As Boolean  … 用途を指定します。
 '   Optional outColIndex As Long = -1  … 用途を指定します。
 Public Function EvaluateExpr(def As String, baseTbl As String, baseRow As Long, myKey As String, _
@@ -707,7 +707,7 @@ End Function
 '   baseTbl As String  … ベーステーブル名
 '   baseRow As Long  … ベース行番号
 '   myKey As String  … 複合キー文字列
-'   _
+' _
                               ByVal processed As Boolean  … 用途を指定します。
 '   Optional outColIndex As Long = -1  … 用途を指定します。
 
@@ -750,7 +750,7 @@ End Function
 '   baseTbl As String  … 用途を指定します。
 '   baseRow As Long  … 用途を指定します。
 '   myKey As String  … 用途を指定します。
-'   _
+' _
                             ByVal processed As Boolean  … 用途を指定します。
 '   ByVal outColIndex As Long  … 用途を指定します。
 
@@ -797,11 +797,11 @@ End Function
 '   args As Collection  … 用途を指定します。
 '   idxFrom As Long  … 用途を指定します。
 '   idxTo As Long  … 用途を指定します。
-'   _
+' _
                                    baseTbl As String  … 用途を指定します。
 '   baseRow As Long  … 用途を指定します。
 '   myKey As String  … 用途を指定します。
-'   _
+' _
                                    ByVal processed As Boolean  … 用途を指定します。
 '   ByVal outColIndex As Long  … 用途を指定します。
 
@@ -823,11 +823,11 @@ End Function
 '   args As Collection  … 用途を指定します。
 '   idxFrom As Long  … 用途を指定します。
 '   idxTo As Long  … 用途を指定します。
-'   _
+' _
                                    baseTbl As String  … 用途を指定します。
 '   baseRow As Long  … 用途を指定します。
 '   myKey As String  … 用途を指定します。
-'   _
+' _
                                    ByVal processed As Boolean  … 用途を指定します。
 '   ByVal outColIndex As Long  … 用途を指定します。
 
@@ -850,7 +850,7 @@ End Function
 '   baseTbl As String  … 用途を指定します。
 '   baseRow As Long  … 用途を指定します。
 '   myKey As String  … 用途を指定します。
-'   _
+' _
                                   ByVal processed As Boolean  … 用途を指定します。
 '   ByVal outColIndex As Long  … 用途を指定します。
 
@@ -870,7 +870,7 @@ Private Function EvalOneCondition(cond As String, baseTbl As String, baseRow As 
             actual = GetScalarValue(args(1), baseTbl, baseRow, myKey, processed, outColIndex)
             expected = StripQuotes(args(2))
             EvalOneCondition = (actual Like expected)
-            WriteLog "DEBUG", "[COND LIKE] actual='" & actual & "' pattern='" & expected & "' -> " & EvalOneCondition
+'            WriteLog "DEBUG", "[COND LIKE] actual='" & actual & "' pattern='" & expected & "' -> " & EvalOneCondition
             Exit Function
         End If
     End If
@@ -889,7 +889,7 @@ Private Function EvalOneCondition(cond As String, baseTbl As String, baseRow As 
                 Case "ENDSWITH":   EvalOneCondition = (Right$(actual, Len(expected)) = expected)
                 Case "CONTAINS":   EvalOneCondition = (InStr(1, actual, expected, vbTextCompare) > 0)
             End Select
-            WriteLog "DEBUG", "[COND " & UCase$(fn) & "] actual='" & actual & "' expected='" & expected & "' -> " & EvalOneCondition
+'            WriteLog "DEBUG", "[COND " & UCase$(fn) & "] actual='" & actual & "' expected='" & expected & "' -> " & EvalOneCondition
             Exit Function
         End If
     End If
@@ -898,7 +898,7 @@ Private Function EvalOneCondition(cond As String, baseTbl As String, baseRow As 
     p = InStr(cond, "=")
     If p = 0 Then
         EvalOneCondition = False
-        WriteLog "DEBUG", "[COND] no '=' in '" & cond & "'"
+'        WriteLog "DEBUG", "[COND] no '=' in '" & cond & "'"
         Exit Function
     End If
     leftExpr = Trim$(Left$(cond, p - 1))
@@ -907,7 +907,7 @@ Private Function EvalOneCondition(cond As String, baseTbl As String, baseRow As 
     expected = NormalizeText(StripQuotes(rightExpr))
 
     EvalOneCondition = (actual = expected)
-    WriteLog "DEBUG", "[COND =] actual='" & actual & "' expected='" & expected & "' -> " & EvalOneCondition
+'    WriteLog "DEBUG", "[COND =] actual='" & actual & "' expected='" & expected & "' -> " & EvalOneCondition
 End Function
 
 '--- EvalIFALL ---
@@ -917,7 +917,7 @@ End Function
 '   baseTbl As String  … 用途を指定します。
 '   baseRow As Long  … 用途を指定します。
 '   myKey As String  … 用途を指定します。
-'   _
+' _
                            ByVal processed As Boolean  … 用途を指定します。
 '   ByVal outColIndex As Long  … 用途を指定します。
 
@@ -951,7 +951,7 @@ End Function
 '   baseTbl As String  … 用途を指定します。
 '   baseRow As Long  … 用途を指定します。
 '   myKey As String  … 用途を指定します。
-'   _
+' _
                                 ByVal processed As Boolean  … 用途を指定します。
 '   ByVal outColIndex As Long  … 用途を指定します。
 
@@ -1103,6 +1103,8 @@ Public Function ApplyTransformSmart(src As Variant) As Variant
                     dst(r, c) = ApplyOneValueTransform(src(r, c), Map_DataType(c))
             End Select
         Next
+        'ログ出力
+        WriteLog "INFO", "ApplyTransform: done " & GetKeyForRow(r)
     Next
     ApplyTransformSmart = dst
 End Function
@@ -1254,7 +1256,7 @@ End Function
 '   baseTbl As String  … 用途を指定します。
 '   baseRow As Long  … 用途を指定します。
 '   myKey As String  … 用途を指定します。
-'   _
+' _
                                           Optional matchIndex As Long = 1  … 用途を指定します。
 Public Function BuildRawValueIgnoringMode(colIndex As Long, baseTbl As String, baseRow As Long, myKey As String, _
                                           Optional matchIndex As Long = 1) As String
