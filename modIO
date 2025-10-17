@@ -109,7 +109,11 @@ Public Function ParseCsvText(ByVal txt As String) As Variant
             End Select
         End If
     Next
-    row.Add field: rows.Add row
+'    row.Add field: rows.Add row
+    If (Len(field) > 0) Or (row.Count > 0) Then
+        row.Add field
+        rows.Add row
+    End If
 
     Dim maxCol As Long, r As Long
     For r = 1 To rows.Count
@@ -165,20 +169,20 @@ End Function
 '   filePath As String  … ファイルパス
 
 Public Function DetectEncoding(filePath As String) As String
-    Dim f As Integer, b1 As Byte, b2 As Byte, b3 As Byte
+    Dim F As Integer, b1 As Byte, b2 As Byte, b3 As Byte
     On Error GoTo FAIL
-    f = FreeFile
-    Open filePath For Binary As #f
-    If LOF(f) >= 2 Then
-        Get #f, , b1: Get #f, , b2
-        If b1 = &HEF And b2 = &HBB And LOF(f) >= 3 Then
-            Get #f, , b3
-            If b3 = &HBF Then DetectEncoding = "UTF-8": Close #f: Exit Function
+    F = FreeFile
+    Open filePath For Binary As #F
+    If LOF(F) >= 2 Then
+        Get #F, , b1: Get #F, , b2
+        If b1 = &HEF And b2 = &HBB And LOF(F) >= 3 Then
+            Get #F, , b3
+            If b3 = &HBF Then DetectEncoding = "UTF-8": Close #F: Exit Function
         ElseIf b1 = &HFF And b2 = &HFE Then
-            DetectEncoding = "UTF-16LE": Close #f: Exit Function
+            DetectEncoding = "UTF-16LE": Close #F: Exit Function
         End If
     End If
-    Close #f
+    Close #F
 FAIL:
     If Len(DetectEncoding) = 0 Then DetectEncoding = "SHIFT_JIS"
 End Function
@@ -217,7 +221,7 @@ End Sub
 ' 概要: この手続きの役割を説明します。
 ' 引数:
 '   importPath As String  … 用途を指定します。
-'   _
+' _
                            tblNames(  … 用途を指定します。
 Public Function LoadAllCsv(importPath As String, _
                            tblNames() As String, _
@@ -239,12 +243,12 @@ Public Function LoadAllCsv(importPath As String, _
 
     ' フォルダ内CSVの索引（小文字ベース名→フルパス）を作る
     Dim idx As Object: Set idx = CreateObject("Scripting.Dictionary")
-    Dim f As String, base As String
-    f = Dir(importPath & "*.csv")
-    Do While Len(f) > 0
-        base = LCase$(Left$(f, InStrRev(f, ".") - 1))   ' 拡張子除去
-        idx(base) = importPath & f                       ' 同名は後勝ちでOK
-        f = Dir()
+    Dim F As String, base As String
+    F = Dir(importPath & "*.csv")
+    Do While Len(F) > 0
+        base = LCase$(Left$(F, InStrRev(F, ".") - 1))   ' 拡張子除去
+        idx(base) = importPath & F                       ' 同名は後勝ちでOK
+        F = Dir()
     Loop
 
     ' 要求テーブルだけ読み込む
