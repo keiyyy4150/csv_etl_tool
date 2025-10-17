@@ -40,7 +40,7 @@ End Sub
 Public Sub UsePipelineMain()
     CurrentMappingTableName = "Mapping_Main"
     CurrentMasterTableName = "Master_Main"
-    CurrentExportBaseName = "main_Keihyouhounavi_Konpurasoudan"
+    CurrentExportBaseName = "main"
     AllowOneToMany = False
     WriteLog "INFO", "Switched pipeline: Main"
 End Sub
@@ -48,7 +48,7 @@ End Sub
 Public Sub UsePipelineList()
     CurrentMappingTableName = "Mapping_List"
     CurrentMasterTableName = "Master_List"
-    CurrentExportBaseName = "list_Keihyouhounavi_Konpurasoudan"
+    CurrentExportBaseName = "list"
     AllowOneToMany = True
     WriteLog "INFO", "Switched pipeline: List"
 End Sub
@@ -79,75 +79,95 @@ End Sub
 ' Import：CSV読込→キー索引→JOIN（無加工）→Master貼付
 '==============================
 Public Sub ImportFiles(pipeLine)
+    '例外発生時EHへジャンプし終了
     On Error GoTo EH
+    '開始時刻の記録
     Dim tStart As Date: tStart = Now
-    
+    '読み込み時の文字コード設定
     If Len(CurrentEncodingMode) = 0 Then CurrentEncodingMode = "AUTO"
-    If pipeLine = "Main" Then
+    
+    '読み込みパイプラインの選択
+    If pipeLine = "Main" Then  ' Main読み込み時
         UsePipelineMain
-    ElseIf pipeLine = "List" Then
+    ElseIf pipeLine = "List" Then  ' List読み込み時
         UsePipelineList
     End If
     
+    'Mappingシートの読み取り
     Dim ok As Boolean
+    'Mapping読み取り処理（modMappingHelper）
     ok = ReadMappingFromTableName(CurrentMappingTableName)
     If Not ok Then
         MsgBox "Mapping の読み取りに失敗しました。", vbCritical
         Exit Sub
     End If
     
+    'インポート対象フォルダの絶対パスを作成
     Dim importPath As String: importPath = ThisWorkbook.Path & "\" & IMPORT_FOLDER & "\"
     EnsureFolder ThisWorkbook.Path & "\" & LOG_FOLDER & "\"
-    
-    Set TableData = CreateObject("Scripting.Dictionary")
+    Set TableData = CreateObject("Scripting.Dictionary")  ' CSV読み込み後の全テーブルデータを保持する Dictionary を初期化
     If Not LoadAllCsv(importPath, Map_TblNames, TableData) Then Exit Sub
     
+    'マッピング／設定に基づくフィルターが存在すれば適用（存在しない場合は無処理）
     ApplyFiltersIfExist
     
+    'JOINに必要なキーのインデックスを構築
     BuildKeyIndexes
-    
-    m_baseTblName = PickBaseTableName(Map_TblNames, Map_SrcCols, Map_IsKey)
-    If Len(m_baseTblName) = 0 And (Not Not Map_TblNames) <> 0 Then m_baseTblName = Map_TblNames(0)
+    m_baseTblName = PickBaseTableName(Map_TblNames, Map_SrcCols, Map_IsKey)  ' JOINのベースとなるテーブル名を選定
+    If Len(m_baseTblName) = 0 And (Not Not Map_TblNames) <> 0 Then m_baseTblName = Map_TblNames(0)  ' ベーステーブル名が決まらない場合フォールバック
      
-    '=== ここでモードを無視して無加工JOIN ===
+    '無加工JOIN
     IgnoreModeOnImport = True
     RawJoined = BuildJoinedRaw(m_baseTblName)
     IgnoreModeOnImport = False
     
-    HasRaw = True: IsProcessed = False
+    HasRaw = True: IsProcessed = False  ' 内部状態フラグの更新
     
+    '貼り付け先Masterテーブルを取得
     Dim masterLo As ListObject
     Set masterLo = GetListObjectByName(CurrentMasterTableName)
     If masterLo Is Nothing Then
         MsgBox "Masterテーブルが見つかりません: " & CurrentMasterTableName, vbCritical
         Exit Sub
     End If
+    
+    '無加工JOIN結果をMasterテーブルへ貼り付け
     PasteToMasterByTable masterLo, RawJoined
     
+    '完了通知
     MsgBox "ファイルインポート完了（無加工をMasterへ反映）", vbInformation
     Exit Sub
 EH:
     MsgBox "ImportFilesでエラー: " & Err.Description, vbCritical
 End Sub
 
+
 '==============================
 ' Process：加工適用 → Masterへ
 '==============================
 Public Sub ProcessData(pipeLine)
+    '例外発生時EHへジャンプし終了
     On Error GoTo EH
+    '開始時刻の記録
     Dim tStart As Date: tStart = Now
+    
+    'インポート処理未実施の場合はエラー終了
     If Not HasRaw Then
         MsgBox "先に『ファイルインポート』を実行してください。", vbExclamation
         Exit Sub
     End If
     
+    '読み込み時の文字コード設定
     If Len(CurrentEncodingMode) = 0 Then CurrentEncodingMode = "AUTO"
+    
+    '読み込みパイプラインの選択
     If pipeLine = "Main" Then
         UsePipelineMain
     ElseIf pipeLine = "List" Then
         UsePipelineList
     End If
     
+    'Mappingシートの読み取り
     Dim ok As Boolean
     ok = ReadMappingFromTableName(CurrentMappingTableName)
     If Not ok Then
@@ -156,25 +176,38 @@ Public Sub ProcessData(pipeLine)
         Exit Sub
     End If
     
+    ' 無加工データ(RawJoined)に対してスマート変換を適用
+    ' - 例: 型変換、正規化、列追加・再計算、条件フィルタ、列順序変更など
+    ' - 戻り値は「加工済み配列」
     Dim procArr As Variant
     procArr = ApplyTransformSmart(RawJoined)
     
+    ' 出力先Masterのテーブルを取得
     Dim masterLo As ListObject
     Set masterLo = GetListObjectByName(CurrentMasterTableName)
     If masterLo Is Nothing Then
         MsgBox "Masterテーブルが見つかりません: " & CurrentMasterTableName, vbCritical
         Exit Sub
     End If
-    PasteToMasterByTable masterLo, procArr
-    IsProcessed = True
     
+    ' 加工済み配列をMasterへ貼り付け
+    PasteToMasterByTable masterLo, procArr
+    IsProcessed = True  ' 加工完了フラグ
+    
+    ' ログ出力(行数/列数/経過時間)
+    ' - UBound(procArr, 1): 行数上限インデックス
+    ' - UBound(procArr, 2): 列数上限インデックス
+    ' - Now - tStart      : 経過時間(TimeSpan)
     WriteLog "INFO", "ProcessData: done / rows=" & UBound(procArr, 1) & " / cols=" & UBound(procArr, 2) & " / elapsed=" & Format(Now - tStart, "hh:nn:ss")
+    
+    ' 完了通知
     MsgBox "データ加工完了（Masterへ反映）", vbInformation
     Exit Sub
 EH:
     WriteLog "ERROR", "ProcessData error: " & Err.Number & " " & Err.Description
     MsgBox "ProcessDataでエラー: " & Err.Description, vbCritical
 End Sub
+
 
 '==============================
 ' Clear：Masterクリア＆中間データ破棄（安全版）
