@@ -70,7 +70,7 @@ Public Function ReadMappingFromTableName(mapTableName As String) As Boolean
     ReDim Map_Key(1 To rows)
     ReDim Map_Mode(1 To rows)
     ReDim Map_Def(1 To rows)
-    ReDim Map_IsKey(1 To rows)                  ' ★追加：キー真偽の再確保
+    ReDim Map_IsKey(1 To rows)
     ReDim Map_TblNames(1 To cols)
     ReDim Map_SrcCols(1 To rows, 1 To cols)
 
