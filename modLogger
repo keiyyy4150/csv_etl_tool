@@ -19,10 +19,10 @@ Public Sub WriteLog(level As String, message As String)
     EnsureFolder logDir
     logPath = logDir & "tool_" & Format(Date, "yyyymmdd") & ".log"
     
-    Dim f As Integer
-    f = FreeFile
-    Open logPath For Append As #f
-    Print #f, Format(Now, "yyyy-mm-dd HH:nn:ss"); " [" & level & "] "; message
-    Close #f
+    Dim F As Integer
+    F = FreeFile
+    Open logPath For Append As #F
+    Print #F, Format(Now, "yyyy-mm-dd HH:nn:ss"); " [" & level & "] "; message
+    Close #F
     On Error GoTo 0
 End Sub
