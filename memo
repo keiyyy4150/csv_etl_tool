@@ -1,77 +1,51 @@
-Attribute VB_Name = "modMappingHelper"
-Option Explicit
+原因はCSV末尾の改行です。
+あなたのパーサ（ParseCsvText）は、ループの中で vbLf に遭遇すると行を追加した後、ループ終了時に無条件で「最後の行」をもう一度追加しています。そのため「末尾が改行で終わるCSV」だと、空の最終行が1行余分に生成されます。
 
-'============================================================
-' 見出し・カラム名の正規化と、ヘッダー探索（ログ付き）
-'============================================================
+⸻
 
-' 見出しの正規化
-' - BOM/不可視・特殊空白の除去
-' - 改行/タブ → 空白
-' - 連続空白を1つに
-' - 前後Trim
-Public Function Norm(ByVal s As String) As String
-    If LenB(s) = 0 Then
-        Norm = ""
-        Exit Function
-    End If
+解決策（最小差分）
 
-    ' 1) 代表的な紛れ込み文字を除去/正規化
-    '    U+FEFF: BOM, U+00A0: NBSP, U+3000: 全角スペース, U+200B: ゼロ幅スペース
-    s = Replace$(s, ChrW$(&HFEFF), "") ' BOM
-    s = Replace$(s, ChrW$(&HA0), " ")  ' NBSP → 半角スペース
-    s = Replace$(s, ChrW$(&H3000), " ")' 全角スペース → 半角
-    s = Replace$(s, ChrW$(&H200B), "") ' ゼロ幅スペース
+1) modIO の ParseCsvText を修正
 
-    ' 2) 改行・タブを空白へ
-    s = Replace$(s, vbCrLf, " ")
-    s = Replace$(s, vbCr, " ")
-    s = Replace$(s, vbLf, " ")
-    s = Replace$(s, vbTab, " ")
+ループ終了後の「最後の行を追加」部分を条件付きにします。
+「行に1つでも値がある」「またはフィールドに文字がある」時だけ追加するようにすれば、末尾改行による空行は出ません。
 
-    ' 3) 連続空白を1つに
-    Do While InStr(s, "  ") > 0
-        s = Replace$(s, "  ", " ")
-    Loop
+' --- ここは既存 ---
+For i = 1 To Len(txt)
+    ' ...中略...
+Next
 
-    ' 4) 前後トリム
-    s = Trim$(s)
+' ★修正前
+' row.Add field: rows.Add row
 
-    Norm = s
-End Function
+' ★修正後（空行抑止）
+If (Len(field) > 0) Or (row.Count > 0) Then
+    row.Add field
+    rows.Add row
+End If
 
+該当箇所：ParseCsvText の終端部（現在は無条件で row.Add field: rows.Add row）です。
 
-' ヘッダー配列から対象カラムのインデックスを返す
-' 見つからない場合は -1 を返し、同じ未一致見出しについては1回だけWARNログを出す
-Public Function FindColumnIndex(ByVal headers As Variant, ByVal target As String) As Long
-    Dim i As Long
-    Dim normTarget As String
-    Dim h As String
+これで「末尾が改行で終わるCSV」でも空行は生成されません。
+改行コードは既に CRLF/CR を LF に正規化しているので、この修正だけでOKです。
 
-    normTarget = Norm(CStr(target))
+⸻
 
-    ' 厳密一致（正規化後）
-    For i = LBound(headers) To UBound(headers)
-        h = Norm(CStr(headers(i)))
-        If StrComp(h, normTarget, vbBinaryCompare) = 0 Then
-            FindColumnIndex = i
-            Exit Function
-        End If
-    Next i
+2)（補助）チャンク読込側の空行スキップ
 
-    ' 見つからなかった場合のWARNを1回だけ出す（静的Dictionaryで抑制）
-    Static logged As Object ' Scripting.Dictionary（遅延バインド）
-    If logged Is Nothing Then
-        Set logged = CreateObject("Scripting.Dictionary")
-    End If
+ImportCsvChunked（行読み）経路を使う場合、もし本当に空の行を読み込んだら無視するガードも入れておくと堅牢です（Line Input #F, line → トリムして空ならスキップ）。呼び出しの骨子はこの通りです：ヘッダを読み、後はブロックに集めて貼る流れ。
 
-    If Not logged.Exists(normTarget) Then
-        logged.Add normTarget, True
-        On Error Resume Next
-        ' WriteLog(level, message) を想定
-        WriteLog "WARN", "FindColumnIndex: header not found. target='" & target & "' (normalized='" & normTarget & "')"
-        On Error GoTo 0
-    End If
+⸻
 
-    FindColumnIndex = -1
-End Function
+3) それでも空行が残る場合
+	•	CSV自体に完全な空行（区切りだけの行など）が混在していると、仕様上“データ行”として扱われます。必要なら「全列空の行は捨てる」フィルタを、配列化後に1回入れるのも手です（性能影響は軽微）。
+
+⸻
+
+なお：「初期状態でテーブルに1行あるから？」について
+
+ImportCsvChunked 経路では、インポート前に FastClearTable でテーブルのデータ行を空にしてから書き込んでいるため、初期の1行が原因ではありません。余分な行は上記のパース時の末尾追加が主因です。
+
+⸻
+
+必要なら、この変更を適用した modIO.bas の差分ファイル形式でもすぐ用意します。
