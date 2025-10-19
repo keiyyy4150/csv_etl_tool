@@ -1,13 +1,25 @@
-CsvEncoding.ps1
-
-# 同一フォルダにあるすべてのCSVファイルを処理
+# 同じフォルダ内の全CSVを対象
 $folderPath = Split-Path -Parent $MyInvocation.MyCommand.Definition
 $csvFiles = Get-ChildItem -Path $folderPath -Filter *.csv
 
-foreach ($file in $csvFiles) {
-    Write-Host "処理中: $($file.Name)"
+# ZIPファイル名（重複しないよう日時付きでもOK）
+$zipPath = Join-Path $folderPath "original_csv_backup.zip"
 
-    # ファイル内容をバイナリとして読み込む
+# すでにZIPが存在したら削除
+if (Test-Path $zipPath) {
+    Remove-Item $zipPath -Force
+}
+
+Write-Host "=== 元CSVをZIPに圧縮中... ==="
+Compress-Archive -Path $csvFiles.FullName -DestinationPath $zipPath -Force
+Write-Host "→ ZIP作成完了: $zipPath"
+Write-Host ""
+
+# CSV修正版を作成
+foreach ($file in $csvFiles) {
+    Write-Host "修正中: $($file.Name)"
+
+    # ファイルをバイナリとして読み込み
     $bytes = [System.IO.File]::ReadAllBytes($file.FullName)
 
     # BOM判定
@@ -36,7 +48,7 @@ foreach ($file in $csvFiles) {
     # 改行コードを統一（CRLF）
     $text = $text -replace "`r?`n", "`r`n"
 
-    # コピー先のファイル名（例: sample.csv → sample_fixed.csv）
+    # 修正版ファイル名を作成（例: sample_fixed.csv）
     $newFile = Join-Path $folderPath ($file.BaseName + "_fixed.csv")
 
     # UTF-8 BOM付きで保存
@@ -45,4 +57,6 @@ foreach ($file in $csvFiles) {
     Write-Host "→ 修正版を作成: $($newFile)"
 }
 
-Write-Host "全CSVファイルのコピー作成が完了しました。"
+Write-Host ""
+Write-Host "=== 全CSV処理完了！ ==="
+Write-Host "元データはZIP化済み、修正版は _fixed.csv として保存されています。"
