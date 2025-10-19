@@ -1,3 +1,5 @@
+CsvEncoding.ps1
+
 # 同一フォルダにあるすべてのCSVファイルを処理
 $folderPath = Split-Path -Parent $MyInvocation.MyCommand.Definition
 $csvFiles = Get-ChildItem -Path $folderPath -Filter *.csv
