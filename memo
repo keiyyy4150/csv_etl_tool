@@ -1,21 +1,27 @@
-ざっくりの「ステップ数（=行数）」を数えました。
-※コメントや空行を含む/含まないの両方を併記します。
-
-合計
-	•	総行数（コメント・空行含む）: 2,917 行
-	•	空行を除いた行数: 2,582 行
-	•	実コード行数（空行＋ ' / Rem 始まりのコメント除外）: 2,329 行
-
-モジュール別（実コード行 / 総行）
-	•	modJoinAndEval.txt: 832 / 986
-	•	modMappingHelper.txt: 282 / 372
-	•	modPerf.txt: 305 / 357
-	•	modProcess.txt: 194 / 265
-	•	modFilterRules.txt: 226 / 284
-	•	modIO.txt: 207 / 256
-	•	modDifinitions.txt: 145 / 206
-	•	modExport.txt: 75 / 97
-	•	modGlobals.txt: 48 / 76
-	•	modLogger.txt: 15 / 18
-
-注: これは現在いただいている10ファイルの合算です。先ほど提案した modMappingHelper.bas の置換等を反映するとカウントはわずかに変動します。必要なら再計測します。
+PS C:\Users\kobayake> C:\Users\kobayake\Documents\【景表法WF再構築】移行ツール\移行ツール_景表法ナビ（起票・準備・完了）\本番データ_文字化け\csvEncoding.ps1
+発生場所 C:\Users\kobayake\Documents\【景表法WF再構築】移行ツール\移行ツール_景表法ナビ（起票・準備・完了）\本番データ_文字化け\csvEncoding.ps1:58 文字:52
++     [System.IO.File]::WriteAllText($newFile, $text, New-Object System ...
++                                                    ~
+',' の後に式が存在しません。
+発生場所 C:\Users\kobayake\Documents\【景表法WF再構築】移行ツール\移行ツール_景表法ナビ（起票・準備・完了）\本番データ_文字化け\csvEncoding.ps1:58 文字:53
++ ...    [System.IO.File]::WriteAllText($newFile, $text, New-Object System. ...
++                                                        ~~~~~~~~~~
+式またはステートメントのトークン 'New-Object' を使用できません。
+発生場所 C:\Users\kobayake\Documents\【景表法WF再構築】移行ツール\移行ツール_景表法ナビ（起票・準備・完了）\本番データ_文字化け\csvEncoding.ps1:22 文字:30
++ foreach ($file in $csvFiles) {
++                              ~
+ステートメント ブロックまたは型定義に終わりの '}' が存在しません。
+発生場所 C:\Users\kobayake\Documents\【景表法WF再構築】移行ツール\移行ツール_景表法ナビ（起票・準備・完了）\本番データ_文字化け\csvEncoding.ps1:58 文字:95
++ ... eAllText($newFile, $text, New-Object System.Text.UTF8Encoding($true))
++                                                                         ~
+式またはステートメントのトークン ')' を使用できません。
+発生場所 C:\Users\kobayake\Documents\【景表法WF再構築】移行ツール\移行ツール_景表法ナビ（起票・準備・完了）\本番データ_文字化け\csvEncoding.ps1:61 文字:1
++ }
++ ~
+式またはステートメントのトークン '}' を使用できません。
+発生場所 C:\Users\kobayake\Documents\【景表法WF再構築】移行ツール\移行ツール_景表法ナビ（起票・準備・完了）\本番データ_文字化け\csvEncoding.ps1:65 文字:12
++ Write-Host "元データはZIP化済み、修正版は _fixed.
++            ~~~~~~~~~~~~~~~~~~~~~~~~~
+文字列に終端記号 " がありません。
+    + CategoryInfo          : ParserError: (:) [], ParentContainsErrorRecordException
+    + FullyQualifiedErrorId : MissingExpressionAfterToken
