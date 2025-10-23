@@ -1,10 +1,153 @@
-=IF(
-  AND(マトリクス!$E6<>"",
-      COUNTIFS(
-        テストケース・結果一覧!$BC:$BC, マトリクス!F$3,
-        テストケース・結果一覧!$AG:$AG,
-        "*"&SUBSTITUTE(SUBSTITUTE(SUBSTITUTE(マトリクス!$E6,"~","~~"),"*","~*"),"?","~?")&"*"
-      )>0
-  ),
-  "○","-"
-)
+お待たせ！
+**「列単位で定義（EXPR）を一度だけ分解→全行で使い回す」**最小差分です。
+置き換えは modJoinAndEval.bas の2か所だけ（ApplyTransformSmart の差し替え＋新関数の追加）。
+既存の EvaluateExpr 本体は触りません（互換維持）。
+根拠：現在は各セルで毎回 SplitExprToLines(def) を実行しており（＝再パースの繰り返し）、ここを列キャッシュ化します。
+
+⸻
+
+① ApplyTransformSmart を差し替え（列ごとに事前分解キャッシュ）
+
+'==============================
+' 後段の加工（型変換のみ／IFや式はEXPRで）
+' ★列単位キャッシュ対応版：EXPRの定義は列ごとに1回だけ分解して使い回す
+'==============================
+Public Function ApplyTransformSmart(src As Variant) As Variant
+    Dim rows As Long, cols As Long
+    rows = UBound(src, 1): cols = UBound(src, 2)
+    Dim dst() As Variant: ReDim dst(1 To rows, 1 To cols)
+
+    ' --- ★列キャッシュ：EXPR定義を事前に分解して保持 ---
+    Dim defLinesCache() As Variant
+    ReDim defLinesCache(1 To cols)
+    Dim c As Long
+    For c = 1 To cols
+        If Map_Mode(c) = "EXPR" Then
+            ' 1列につき1回だけ分割
+            Set defLinesCache(c) = SplitExprToLines(Map_Def(c))
+        Else
+            Set defLinesCache(c) = Nothing
+        End If
+    Next
+
+    Dim r As Long
+    For r = 1 To rows
+        For c = 1 To cols
+            Select Case Map_Mode(c)
+                Case "CONCAT"
+                    ' 必要なら後日実装。現状はスルーで従来挙動維持。
+                    ' dst(r, c) = BuildConcatProcessedValue(Map_Def(c), m_baseTblName, m_baseRowIdx(r), GetKeyForRow(r), c)
+                    dst(r, c) = ApplyOneValueTransform(src(r, c), Map_DataType(c))
+
+                Case "EXPR"
+                    If Not defLinesCache(c) Is Nothing Then
+                        ' --- ★列キャッシュを使う ---
+                        dst(r, c) = EvaluateExprCached(defLinesCache(c), m_baseTblName, m_baseRowIdx(r), _
+                                                       GetKeyForRow(r), True, c)
+                    Else
+                        ' 安全網（通常到達しない）：従来の関数を使用
+                        dst(r, c) = EvaluateExpr(Map_Def(c), m_baseTblName, m_baseRowIdx(r), _
+                                                 GetKeyForRow(r), True, c)
+                    End If
+
+                Case Else
+                    dst(r, c) = ApplyOneValueTransform(src(r, c), Map_DataType(c))
+            End Select
+        Next
+    Next
+
+    ApplyTransformSmart = dst
+End Function
+
+※ これで 同じ列の EXPR を行数分パースし直す無駄が消えます。特に 4000×130 のようなケースで効きます。
+以前は各セルで SplitExprToLines(def) を都度呼んでいました。
+
+⸻
+
+② 新規追加：EvaluateExprCached（分解済み行を受け取って評価）
+
+'==============================
+' EXPR 評価（列キャッシュ利用版）
+' ・defLines には SplitExprToLines(def) 済みの行コレクションを渡す
+' ・ロジックは EvaluateExpr と同等だが、行分割を省く
+'==============================
+Public Function EvaluateExprCached(defLines As Collection, baseTbl As String, baseRow As Long, myKey As String, _
+                                   ByVal processed As Boolean, Optional outColIndex As Long = -1) As Variant
+    Dim i As Long, one As String, res As String, acc As String
+    If defLines Is Nothing Then
+        EvaluateExprCached = "": Exit Function
+    End If
+
+    For i = 1 To defLines.Count
+        one = Trim$(CStr(defLines(i)))
+        If one = "" Then GoTo CONT
+
+        If HasIFSyntax(one) Then
+            res = EvalIFLine(one, baseTbl, baseRow, myKey, processed, outColIndex)
+            If Len(res) > 0 Then
+                If acc = "" Then acc = res Else acc = acc & vbLf & res
+            End If
+
+        ElseIf InStr(one, """") > 0 Or InStr(one, "'") > 0 Then
+            res = ApplyTemplate(one, baseTbl, baseRow, myKey, processed, outColIndex)
+            If Len(res) > 0 Then
+                If acc = "" Then acc = res Else acc = acc & vbLf & res
+            End If
+
+        Else
+            Dim up As String: up = UCase$(one)
+            If Left$(up, 4) = "SUM(" And Right$(up, 1) = ")" Then
+                ' Definitionsで SUM(...) サポート（従来どおり）
+                res = EvalSUM(one, baseTbl, baseRow, myKey, processed, outColIndex)
+            Else
+                Dim expr As String, v As Variant
+                If processed Then
+                    expr = ReplaceTokensProcessedAsNumber(one, baseTbl, baseRow, myKey, outColIndex)
+                Else
+                    expr = ReplaceTokensWithRaw(one, baseTbl, baseRow, myKey)
+                End If
+
+                ' まずは Excel Evaluate、失敗時のみ SafeEval へ（従来どおり）
+                On Error Resume Next
+                v = Application.Evaluate("=" & expr)
+                On Error GoTo 0
+                If IsError(v) Or VarType(v) = vbError Or IsEmpty(v) Then
+                    res = CStr(SafeEval(expr))
+                Else
+                    res = CStr(v)
+                End If
+            End If
+
+            If Len(res) > 0 Then
+                If acc = "" Then acc = res Else acc = acc & vbLf & res
+            End If
+        End If
+
+CONT:
+    Next
+
+    EvaluateExprCached = acc
+End Function
+
+この中身は 既存 EvaluateExpr と同等ロジックで、行分割だけ省いた版です（HasIFSyntax/EvalIFLine/ApplyTemplate/EvalSUM/ReplaceTokens*/SafeEval 等は既存のまま使用）。
+
+⸻
+
+導入手順
+	1.	modJoinAndEval.bas をエクスポートしてバックアップ
+	2.	上記 ①の関数を置き換え、②の関数を追記
+	3.	VBAメニュー「デバッグ > VBAプロジェクトのコンパイル」でエラーなしを確認
+
+⸻
+
+効果の目安
+	•	以前：各セルで SplitExprToLines → 4000×130 だと 52万回 分割
+	•	今回：各列で一度だけ → 最大130回 に削減（≒分割コストが ~4000分の1）
+
+式の評価自体のコストは残りますが、定義の再パース分の時間を大幅カットできます。
+元の観測（50件=約1分）からの比例延伸（4000件 ≈ 80分）に対して、実測で 10〜15分台まで落ちるケースが多い想定です（式内容にも依存）。
+
+⸻
+
+必要なら、Application.StatusBar の更新頻度も落として微調整（たとえば 200行ごと）するとさらに数％速くなります。
+他にも最適化ネタ（Evaluate 成功率アップ、テンプレ前処理の定数畳み込み 等）ありますが、まずはこのキャッシュだけで体感が変わるはず。
