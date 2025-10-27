@@ -11,6 +11,10 @@ Option Explicit
 ' 引数:
 '   level As String  … ログレベル（'INFO'/'WARN'/'ERROR' など）
 '   message As String  … メッセージ本文
+' 概要: レベル・時刻・メッセージをログファイルに追記します。
+' 引数:
+'   level As String  … INFO/WARN/ERROR など
+'   message As String  … 内容
 Public Sub WriteLog(level As String, message As String)
     On Error Resume Next
     Dim basePath As String, logDir As String, logPath As String
