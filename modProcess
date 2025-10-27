@@ -5,6 +5,8 @@ Option Explicit
 '============================================================
 
 '=== 既定行数にマスターの表サイズを戻す（B4セル：行数設定 / 空なら20000） ===
+' 概要: Master_* テーブルのサイズを初期化（必要行/列の確保・不要領域の削除）します。
+' 備考: Process 前に安全なサイズへ調整。
 Private Sub ResetMasterSize(masterLo As ListObject)
     On Error Resume Next
     If masterLo Is Nothing Then Exit Sub
@@ -23,6 +25,9 @@ End Sub
 
 
 '=== 高速クリア：テーブルのデータ部を空に（列構成は維持） ===
+' 概要: 指定 ListObject のデータ行を高速でクリアします（ヘッダ保持）。
+' 引数:
+'   lo As ListObject  … クリア対象のテーブル
 Private Sub FastClearTable(lo As ListObject)
     If lo Is Nothing Then Exit Sub
     If lo.DataBodyRange Is Nothing Then
@@ -37,6 +42,9 @@ End Sub
 '==============================
 ' パイプライン切替（Main / List）
 '==============================
+' 概要: Main パイプライン用のマッピング/マスター/エクスポート設定を適用します。
+' 備考: Mapping/Main を使用（1対多は禁止）。
+' 備考: ログに 'Switched pipeline: Main' を出力。
 Public Sub UsePipelineMain()
     CurrentMappingTableName = "Mapping_Main"
     CurrentMasterTableName = "Master_Main"
@@ -44,6 +52,9 @@ Public Sub UsePipelineMain()
     AllowOneToMany = False
     WriteLog "INFO", "Switched pipeline: Main"
 End Sub
+' 概要: List パイプライン用のマッピング/マスター/エクスポート設定を適用します。
+' 備考: Mapping/List を使用（1対多を許可）。
+' 備考: ログに 'Switched pipeline: List' を出力。
 
 Public Sub UsePipelineList()
     CurrentMappingTableName = "Mapping_List"
@@ -257,6 +268,10 @@ End Sub
 '==============================
 ' Masterへ貼付（行数だけ合わせて一括代入）
 '==============================
+' 概要: テーブル名→対象 Master_* へ配列を貼り付けます。列見出しの整合も確認します。
+' 引数:
+'   tblName As String  … 貼付対象テーブル名
+'   arr As Variant  … 貼付する2次元配列（ヘッダ付）
 Public Sub PasteToMasterByTable(masterTbl As ListObject, dataArr As Variant)
     Dim rows As Long, cols As Long
     rows = UBound(dataArr, 1): cols = UBound(dataArr, 2)
@@ -273,6 +288,10 @@ End Sub
 
 
 '=== Runner: Import (PerfGuardから呼ばれる) ===
+' 概要: CSV 入力→前処理→マスター準備までをひとまとめに実行します。
+' 引数:
+'   pipeLine As String  … パイプライン名（"Main"|"List"）
+' 備考: ImportFiles を呼び出し、EndProgress で進捗を締めます。
 Public Sub Run_Import(ByVal pipeLine As String)
     On Error GoTo EH
     Pulse "インポート準備中"
@@ -286,6 +305,10 @@ End Sub
 
 
 '=== Runner: Process (PerfGuardから呼ばれる) ===
+' 概要: （Import 済みデータに対して）マッピング→JOIN/CONCAT→型変換→フィルタ適用→Master_* へ貼付、までの本処理を実行します。
+' 引数:
+'   pipeLine As String  … パイプライン名（"Main"|"List"）
+' 備考: 途中で進捗更新（Pulse）、最終的にEndProgress。
 Public Sub Run_Process(ByVal pipeLine As String)
     On Error GoTo EH
     Pulse "加工準備中"
