@@ -12,6 +12,9 @@ Option Explicit
 
 '--- ExportCSV ---
 ' 概要: Masterテーブルの現在値をCSVとして出力します。
+' 概要: Master_* の内容を出力ディレクトリへ CSV 書き出しします。シート B3 の変換識別子をファイル名に付加します。
+' 備考: 出力先フォルダを自動生成。
+' 備考: エンコードは UI 設定値を使用。
 Public Sub ExportCSV()
     On Error GoTo EH
     Dim masterLo As ListObject
@@ -68,6 +71,12 @@ End Sub
 '   lo As ListObject  … 出力対象のListObject（ヘッダ＋データ）
 '   filePath As String  … 出力先のフルパス
 '   encMode As String  … エンコード（AUTO/UTF-8/SHIFT_JIS/UTF-16LE）
+' 概要: 指定 Range を CSV として出力し、指定エンコードで保存します。
+' 引数:
+'   rng As Range  … 出力するセル範囲（ヘッダ含む）
+'   filePath As String  … 書き出し先パス
+'   encodingName As String  … テキストエンコード名（例: UTF-8, Shift_JIS）
+' 備考: 改行/カンマを適切にクオート。
 Public Sub WriteRangeAsCsvWithEncoding(lo As ListObject, filePath As String, encMode As String)
     Dim arr As Variant, rows As Long, cols As Long
     arr = lo.DataBodyRange.Value
