@@ -1,72 +1,10 @@
-エラー原因はここです👇
-	•	EvaluateExprCached の第1引数は Collection 型（既定で ByRef）
-	•	なのに defLinesCache(c) が Variant（オブジェクト参照入り）だったため、
-ByRef引数の型不一致 でコンパイルエラーになります。
+ImportFiles のコメントアウトを参考に、処理を細かく記載したいです。
+あと、以下のような表記になっている箇所はその処理に合わせて修正したいです・
+' 概要: この手続きの役割を説明します。
+' 引数:
+'   lo As ListObject  … 用途を指定します。
+'   idxId As Long  … 用途を指定します。
+'   idxVer As Long  … 用途を指定します。
+'   defId As String  … 用途を指定します。
 
-安全に直すには 2点 だけ変更してください。
-
-⸻
-
-① defLinesCache を Collection 配列にする
-
-' 変更前
-Dim defLinesCache() As Variant
-ReDim defLinesCache(1 To cols)
-
-' 変更後
-Dim defLinesCache() As Collection
-ReDim defLinesCache(1 To cols)
-
-For c = 1 To cols
-    If Map_Mode(c) = "EXPR" Then
-        ' 1列につき1回だけ分割
-        Set defLinesCache(c) = SplitExprToLines(Map_Def(c))   ' ← Collection を格納
-    Else
-        Set defLinesCache(c) = Nothing
-    End If
-Next
-
-② EvaluateExprCached の引数を ByVal にする
-
-ByRef のままでも動きますが、配列要素を渡す時の型厳格性でハマりづらくするため ByVal にしておくのがおすすめです。
-
-' 変更前
-Public Function EvaluateExprCached(defLines As Collection, baseTbl As String, baseRow As Long, myKey As String, _
-                                   ByVal processed As Boolean, Optional outColIndex As Long = -1) As Variant
-
-' 変更後
-Public Function EvaluateExprCached(ByVal defLines As Collection, baseTbl As String, baseRow As Long, myKey As String, _
-                                   ByVal processed As Boolean, Optional outColIndex As Long = -1) As Variant
-
-これで、
-
-dst(r, c) = EvaluateExprCached(defLinesCache(c), ... )
-
-の呼び出しが型一致し、コンパイルが通ります。
-
-⸻
-
-（おまけ：気づき）
-
-貼っていただいたコードだと、下記2箇所で元の実装をコメントアウトしたままになっているため、数式置換が常に "0" になってしまいます（性能には関係ないですが、結果が変わる可能性あり）。
-
-' ReplaceTokensWithRaw：
-' valStr = ResolveTokenRaw(token, baseTbl, baseRow, myKey)
-valStr = ToNumberOrZero(valStr)   ' ← valStr が空のまま 0 になる
-
-' ReplaceTokensProcessedAsNumber：
-' valStr = ResolveTokenProcessed(token, baseTbl, baseRow, myKey, outColIndex)
-valStr = ToNumberOrZero(valStr)   ' ← 同上
-
-本来はコメントアウトを外して、取得 → 数値化の順にしてください。
-
-valStr = ResolveTokenRaw(token, baseTbl, baseRow, myKey)
-valStr = ToNumberOrZero(valStr)
-
-valStr = ResolveTokenProcessed(token, baseTbl, baseRow, myKey, outColIndex)
-valStr = ToNumberOrZero(valStr)
-
-
-⸻
-
-不明点あれば、該当箇所だけ抜粋で送っていただければその場で直します！
+全体的に、不要なものは削除してキレイ化したいです。（順番が変な箇所など）　コード自体はいったん変えないでください。
