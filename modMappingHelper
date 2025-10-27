@@ -8,6 +8,11 @@ Option Explicit
 ' 既存の公開配列（Map_*）はそのまま使用する前提：
 '   Map_No(), Map_OutCols(), Map_DataType(), Map_Key(), Map_Mode(), Map_Def(), Map_TblNames(), Map_SrcCols(,)
 '==============================
+' 概要: Mapping_*（Main/List）からマッピング定義を読み込み、列属性・キー・データ型・Value/Concat などの配列へ展開します。
+' 引数:
+'   mappingTableName As String  … 読み込むマッピングテーブル名（Mapping_Main/Mapping_List）
+' 戻り値: 読込成功時 True / 異常時 False
+' 備考: 出力列名の正当性と重複を検証。
 Public Function ReadMappingFromTableName(mapTableName As String) As Boolean
     On Error GoTo FAIL
 
@@ -131,6 +136,10 @@ FAIL:
 End Function
 
 ' キー判定（○/◯/●/1/TRUE/YES/Y などを許容）
+' 概要: マッピング行がキー列として指定されているかを判定します。
+' 引数:
+'   v As Variant  … セル値
+' 戻り値: True/False
 Private Function IsKeyTrue(ByVal s As String) As Boolean
     Dim k As String
     k = UCase$(Trim$(s))
@@ -142,6 +151,11 @@ End Function
 
 
 '==================== ローカルユーティリティ ====================
+' 概要: 指定シート上で ListObject 名からテーブルを取得します。
+' 引数:
+'   ws As Worksheet  … 検索対象ワークシート
+'   name As String  … ListObject 名
+' 戻り値: 見つかった ListObject / 見つからなければ Nothing
 
 Private Function GetListObjectByNameLocal(nameOrRange As String) As ListObject
     Dim ws As Worksheet, lo As ListObject
@@ -155,6 +169,11 @@ Private Function GetListObjectByNameLocal(nameOrRange As String) As ListObject
     Next
     Set GetListObjectByNameLocal = Nothing
 End Function
+' 概要: テーブルのヘッダ行から列名の位置を返します（完全一致）。見つからなければ 0。
+' 引数:
+'   lo As ListObject  … 対象テーブル
+'   columnName As String  … 検索するヘッダ名
+' 戻り値: 1始まりの列番号 / 見つからない場合 0
 
 Private Function FindHeaderIndexLocal(lo As ListObject, headerName As String) As Long
     Dim i As Long, s As String
@@ -180,6 +199,8 @@ End Function
 '==============================
 ' キー索引（Single: 1件、Multi: 複数行）堅牢版
 '==============================
+' 概要: Mapping からキー列の列番号配列を構築します。
+' 戻り値: Long 配列（空可）
 Public Sub BuildKeyIndexes()
     Set KeyIndexSingle = CreateObject("Scripting.Dictionary")
     Set KeyIndexMulti = CreateObject("Scripting.Dictionary")
@@ -308,11 +329,20 @@ End Sub
 
 
 '=== ヘッダ正規化 & 列番号探し（共通） ===
+' 概要: ヘッダ比較用に Trim/BOM 除去等の正規化を行います。
+' 引数:
+'   ByVal s As String  … 正規化対象文字列
+' 戻り値: 正規化後の文字列
 Private Function Norm(ByVal s As String) As String
     If Len(s) = 0 Then Norm = "": Exit Function
     s = Replace$(s, ChrW(&HFEFF), "") ' UTF-8 BOM
     Norm = Trim$(s)
 End Function
+' 概要: 1行目ヘッダの配列から列番号を返します（見つからなければ 0）。
+' 引数:
+'   arr As Variant  … ヘッダ付2次元配列
+'   ColName As String  … 検索列名
+' 戻り値: 列番号（1始まり）/ 未検出 0
 
 Public Function FindColumnIndex(arr As Variant, ColName As String) As Long
     Dim rHead As Long, c As Long, cLB As Long, cUB As Long, target As String
@@ -340,6 +370,8 @@ End Function
 '  - isKey    : キー列フラグ配列       Map_IsKey()
 ' 返り値      : ベーステーブル名（空配列時は ""）
 '==============================
+' 概要: Mapping_* からベースにすべきテーブル名（Mainは単一、Listは1対多想定）を選びます。
+' 戻り値: ベーステーブル名
 Public Function PickBaseTableName(tblNames() As String, srcCols As Variant, isKey() As Boolean) As String
     Dim t As Long, i As Long
     ' テーブル名が未設定なら空を返す
