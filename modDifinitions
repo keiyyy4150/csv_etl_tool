@@ -1,8 +1,9 @@
 Option Explicit
 '============================================================
 ' modDifinitions
-' 概要: Definitionsシートから定義IDに紐付くロジックテンプレートを復元・展開する機能（パラメータ埋め込み対応）。
+' 概要: Definitionsシートから定義IDに紐付くロジックテンプレートを復元・展開する機能
 '============================================================
+
 
 ' Definitionsシートから「定義ID」に対応するロジック群を連結して返す
 ' シート要件（ListObject名："Definitions" 推奨）：
@@ -14,7 +15,7 @@ Option Explicit
 ' 概要: Definitionsシートから定義IDに対応するロジックを復元して返します。
 ' 引数:
 '   defIdRaw As String  … 定義ID（引数付き 'ID(arg1, arg2,...)' も可）
-'   Optional definitionsListName As String = "Definitions"  … 用途を指定します。
+'   Optional definitionsListName As String = "Definitions"  … 用途を指定
 
 Public Function BuildDefinitionFromSheet(defIdRaw As String, Optional definitionsListName As String = "Definitions") As String
     On Error GoTo ERR_HANDLER
@@ -50,13 +51,15 @@ ERR_HANDLER:
     BuildDefinitionFromSheet = ""
 End Function
 
+
 ' Definitionsシートから指定定義名のロジック（テンプレ）を取得
 
 '--- BuildDefinitionTemplateFromSheet ---
-' 概要: Definitionsから指定定義名のテンプレート（行No順結合）を取得します。
+' 概要: Definitionsから指定定義名のテンプレート（行No順結合）を取得
 ' 引数:
 '   defName As String  … 定義名
-'   Optional definitionsListName As String = "Definitions"  … 用途を指定します。
+'   Optional definitionsListName As String = "Definitions"  … 用途を指定
+
 Private Function BuildDefinitionTemplateFromSheet(defName As String, Optional definitionsListName As String = "Definitions") As String
     Dim lo As ListObject
     Set lo = GetListObjectByNameEx(definitionsListName)
@@ -132,11 +135,11 @@ End Function
 ' 解析:  定義ID(引数1, 引数2, ...) → 定義名と引数Dictionaryに展開
 
 '--- ParseDefinitionCall ---
-' 概要: この手続きの役割を説明します。
+' 概要:
 ' 引数:
-'   ByVal src As String  … 用途を指定します。
-'   ByRef defName As String  … 用途を指定します。
-'   ByRef params As Object  … 用途を指定します。
+'   ByVal src As String  …
+'   ByRef defName As String  …
+'   ByRef params As Object  …
 Private Sub ParseDefinitionCall(ByVal src As String, ByRef defName As String, ByRef params As Object)
     Dim openPos As Long, closePos As Long, argStr As String, parts As Variant, i As Long
 
@@ -164,10 +167,10 @@ End Sub
 ' テンプレ内の {param1}, {param2}, ... を展開
 
 '--- ExpandNamedParams ---
-' 概要: この手続きの役割を説明します。
+' 概要:
 ' 引数:
-'   ByVal template As String  … 用途を指定します。
-'   ByRef params As Object  … 用途を指定します。
+'   ByVal template As String  …
+'   ByRef params As Object  …
 Private Function ExpandNamedParams(ByVal template As String, ByRef params As Object) As String
     Dim k As Variant, s As String
     s = template
@@ -177,12 +180,13 @@ Private Function ExpandNamedParams(ByVal template As String, ByRef params As Obj
     ExpandNamedParams = s
 End Function
 
+
 '==================== ユーティリティ（このモジュール内限定名） ====================
 
 '--- GetListObjectByNameEx ---
-' 概要: この手続きの役割を説明します。
+' 概要:
 ' 引数:
-'   nameOrRange As String  … 用途を指定します。
+'   nameOrRange As String  …
 
 Private Function GetListObjectByNameEx(nameOrRange As String) As ListObject
     Dim ws As Worksheet, lo As ListObject
@@ -197,11 +201,13 @@ Private Function GetListObjectByNameEx(nameOrRange As String) As ListObject
     Set GetListObjectByNameEx = Nothing
 End Function
 
+
 '--- FindHeaderIndexEx ---
-' 概要: この手続きの役割を説明します。
+' 概要: 指定されたテーブル(ListObject)のヘッダー行から、列名(headerName)が一致する列番号を取得する。
+'       一致が見つからなければ0を返す。
 ' 引数:
-'   lo As ListObject  … 用途を指定します。
-'   headerName As String  … 用途を指定します。
+'   lo As ListObject  … 検索対象となるExcelテーブル(ListObject)
+'   headerName As String  … 探したいヘッダー(列名)の文字列
 
 Private Function FindHeaderIndexEx(lo As ListObject, headerName As String) As Long
     Dim i As Long, s As String
@@ -215,13 +221,15 @@ Private Function FindHeaderIndexEx(lo As ListObject, headerName As String) As Lo
     FindHeaderIndexEx = 0
 End Function
 
+
 '--- MaxVersionForIdEx ---
-' 概要: この手続きの役割を説明します。
+' 概要: 指定されたテーブル(ListObject)内で、対象ID(defId)に一致する行を検索し、
+'       バージョン列(idxVer)の最大値を取得して返す。該当がない場合は1を返す。
 ' 引数:
-'   lo As ListObject  … 用途を指定します。
-'   idxId As Long  … 用途を指定します。
-'   idxVer As Long  … 用途を指定します。
-'   defId As String  … 用途を指定します。
+'   lo As ListObject  … 検索対象となるExcelテーブル(ListObject)
+'   idxId As Long  … IDが格納された列番号 (1始まり)
+'   idxVer As Long  … バージョン番号が格納された列番号 (1始まり、0以下なら無効)
+'   defId As String  … 最大バージョンを求める対象のID文字列
 
 Private Function MaxVersionForIdEx(lo As ListObject, idxId As Long, idxVer As Long, defId As String) As Long
     Dim maxv As Long: maxv = 1
