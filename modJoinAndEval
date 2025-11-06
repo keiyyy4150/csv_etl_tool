@@ -4,12 +4,12 @@ Option Explicit
 ' 概要: マッピングに基づくJOIN処理、値の正規化、式の評価（IF、SUM、Evaluate 等）を担う中核ロジック。
 '============================================================
 
-' 全角→半角、カンマ/通貨/％除去、％は小数化して返す
 
 '--- ToNumberOrZero ---
-' 概要: この手続きの役割を説明します。
+' 概要: 全角→半角、カンマ/通貨/％除去、％は小数化して返す
 ' 引数:
-'   ByVal s As Variant  … 用途を指定します。
+'   ByVal s As Variant  …判定対象の文字列
+
 Private Function ToNumberOrZero(ByVal s As Variant) As String
     Dim t As String: t = Trim$(CStr(s))
     If Len(t) = 0 Then ToNumberOrZero = "0": Exit Function
@@ -35,12 +35,12 @@ Private Function ToNumberOrZero(ByVal s As Variant) As String
     End If
 End Function
 
-' 文字列の正規化：Trim → 可能なら半角化（全角A/1対策）→ Null回避
 
 '--- NormalizeText ---
-' 概要: この手続きの役割を説明します。
+' 概要: 文字列の正規化：Trim → 可能なら半角化（全角A/1対策）→ Null回避
 ' 引数:
-'   ByVal s As Variant  … 用途を指定します。
+'   ByVal s As Variant  …判定対象の文字列
+
 Private Function NormalizeText(ByVal s As Variant) As String
     Dim t As String
     If IsNull(s) Then
@@ -50,18 +50,18 @@ Private Function NormalizeText(ByVal s As Variant) As String
     t = CStr(s)
     t = Trim$(t)
     On Error Resume Next
-    ' 日本語CSVでありがちな全角英数字混在対策（環境依存だが害はない）
+    ' 全角英数字混在対策
     t = StrConv(t, vbNarrow)
     On Error GoTo 0
     NormalizeText = t
 End Function
 
-'=== 文字列を「ヘッダ用に」正規化（BOM除去＋Trim） ===
 
 '--- NormalizeHeader ---
-' 概要: この手続きの役割を説明します。
+' 概要: 文字列を「ヘッダ用に」正規化（BOM除去＋Trim）
 ' 引数:
-'   ByVal s As String  … 用途を指定します。
+'   ByVal s As String  …判定対象の文字列
+
 Private Function NormalizeHeader(ByVal s As String) As String
     If Len(s) = 0 Then
         NormalizeHeader = ""
@@ -72,13 +72,13 @@ Private Function NormalizeHeader(ByVal s As String) As String
     NormalizeHeader = s
 End Function
 
-'=== 改行・| 区切りで複数列名を返す（空は除外） ===
 
 '--- SafeGetSrcColNames ---
-' 概要: この手続きの役割を説明します。
+' 概要: 改行・| 区切りで複数列名を返す（空は除外）
 ' 引数:
-'   i As Long  … 用途を指定します。
-'   tIdx As Long  … 用途を指定します。
+'   i As Long  …
+'   tIdx As Long  …
+
 Private Function SafeGetSrcColNames(i As Long, tIdx As Long) As Collection
     Dim col As New Collection
 
@@ -104,12 +104,12 @@ Private Function SafeGetSrcColNames(i As Long, tIdx As Long) As Collection
     Set SafeGetSrcColNames = col
 End Function
 
-'=== 列名→列番号（見出し=1行目）
 
 '--- Norm ---
-' 概要: この手続きの役割を説明します。
+' 概要: 列名→列番号（見出し=1行目）
 ' 引数:
-'   ByVal s As String  … 用途を指定します。
+'   ByVal s As String  …
+
 Private Function Norm(ByVal s As String) As String
     If Len(s) = 0 Then Norm = "": Exit Function
     s = Replace$(s, ChrW(&HFEFF), "") ' UTF-8 BOM
@@ -117,11 +117,12 @@ Private Function Norm(ByVal s As String) As String
     Norm = s
 End Function
 
+
 '--- FindColumnIndex ---
-' 概要: この手続きの役割を説明します。
+' 概要: インデックス（列番号）を見つける
 ' 引数:
-'   arr As Variant  … 用途を指定します。
-'   ColName As String  … 用途を指定します。
+'   arr As Variant  …
+'   ColName As String  …
 
 Public Function FindColumnIndex(arr As Variant, ColName As String) As Long
     Dim c As Long, target As String
@@ -135,12 +136,12 @@ Public Function FindColumnIndex(arr As Variant, ColName As String) As Long
     FindColumnIndex = 0
 End Function
 
-'=== テーブル名のインデックス（見つからなければ -1）
 
 '--- IndexOfTable ---
-' 概要: この手続きの役割を説明します。
+' 概要: テーブル名のインデックス（見つからなければ -1）
 ' 引数:
-'   tblNames(  … 用途を指定します。
+'   tblNames  …
+
 Public Function IndexOfTable(tblNames() As String, name As String) As Long
     Dim i As Long
     For i = LBound(tblNames) To UBound(tblNames)
@@ -149,14 +150,14 @@ Public Function IndexOfTable(tblNames() As String, name As String) As Long
     IndexOfTable = -1
 End Function
 
-'=== 1行から複合キー文字列を作成
 
 '--- BuildKeyFromRow ---
-' 概要: この手続きの役割を説明します。
+' 概要: 1行から複合キー文字列を作成
 ' 引数:
-'   arr As Variant  … 用途を指定します。
-'   rowIdx As Long  … 用途を指定します。
-'   keyColIdx(  … 用途を指定します。
+'   arr As Variant  …
+'   rowIdx As Long  …
+'   keyColIdx  …
+
 Public Function BuildKeyFromRow(arr As Variant, rowIdx As Long, keyColIdx() As Long) As String
     Dim i As Long, s As String: s = ""
     If (Not Not keyColIdx) <> 0 Then
@@ -168,13 +169,13 @@ Public Function BuildKeyFromRow(arr As Variant, rowIdx As Long, keyColIdx() As L
     BuildKeyFromRow = s
 End Function
 
-'=== Map_SrcCols(i, tIdx) を安全に列名取得（添字補正＆型ガード）
 
 '--- SafeGetSrcColName ---
-' 概要: この手続きの役割を説明します。
+' 概要: Map_SrcCols(i, tIdx) を安全に列名取得（添字補正＆型ガード）
 ' 引数:
-'   i As Long  … 用途を指定します。
-'   tIdx As Long  … 用途を指定します。
+'   i As Long  …
+'   tIdx As Long  …
+
 Private Function SafeGetSrcColName(i As Long, tIdx As Long) As String
     Dim lb1 As Long, ub1 As Long, lb2 As Long, ub2 As Long
     On Error GoTo FAIL
@@ -204,13 +205,13 @@ FAIL:
     SafeGetSrcColName = ""
 End Function
 
-'=== ベーステーブルのキー列 index 一式を返す（列名→列番号）
 
 '--- CollectKeyColIndexesForBase ---
-' 概要: この手続きの役割を説明します。
+' 概要: ベーステーブルのキー列 index 一式を返す（列名→列番号）
 ' 引数:
-'   baseArr As Variant  … 用途を指定します。
-'   baseTbl As String  … 用途を指定します。
+'   baseArr As Variant  …
+'   baseTbl As String  …
+
 Public Function CollectKeyColIndexesForBase(baseArr As Variant, baseTbl As String) As Variant
     Dim tIdx As Long, i As Long, kc As Long
     Dim names As Collection
@@ -256,12 +257,14 @@ Public Function CollectKeyColIndexesForBase(baseArr As Variant, baseTbl As Strin
     CollectKeyColIndexesForBase = idx
 End Function
 
+
 ' BuildJoinedRaw（無加工）※ Listパイプラインは1対多で行複製
 
 '--- BuildJoinedRaw ---
-' 概要: ベーステーブルを軸に1対多展開を考慮しつつ無加工のJOIN結果配列を作成します。
+' 概要: ベーステーブルを軸に1対多展開を考慮しつつ無加工のJOIN結果配列を作成
 ' 引数:
 '   baseTbl As String  … ベースとなるテーブル名
+
 Public Function BuildJoinedRaw(baseTbl As String) As Variant
     Dim outColsCnt As Long
     outColsCnt = UBound(Map_OutCols) - LBound(Map_OutCols) + 1
@@ -328,13 +331,13 @@ Public Function BuildJoinedRaw(baseTbl As String) As Variant
     BuildJoinedRaw = result
 End Function
 
-' key に対する「各テーブルの一致件数」の最大値
 
 '--- MaxMatchesForKey ---
-' 概要: この手続きの役割を説明します。
+' 概要: key に対する「各テーブルの一致件数」の最大値
 ' 引数:
-'   ByVal keyStr As String  … 用途を指定します。
-'   baseTbl As String  … 用途を指定します。
+'   ByVal keyStr As String  …
+'   baseTbl As String  …
+
 Private Function MaxMatchesForKey(ByVal keyStr As String, baseTbl As String) As Long
     Dim t As Long, m As Long: m = 0
     If (Not Not Map_TblNames) = 0 Then MaxMatchesForKey = 1: Exit Function
@@ -355,19 +358,17 @@ Private Function MaxMatchesForKey(ByVal keyStr As String, baseTbl As String) As 
     MaxMatchesForKey = m
 End Function
 
-' VALUE/CONCAT の raw 取得（k番目のマッチを考慮）
 
 '--- BuildValueModeRaw ---
-' 概要: VALUE/CONCATモードを考慮して、raw値を（必要に応じて結合し）取り出します。
+' 概要: VALUE/CONCATモードを考慮して、raw値を（必要に応じて結合し）取り出す
 ' 引数:
 '   colIndex As Long  … 出力列インデックス
 '   baseTbl As String  … ベーステーブル名
 '   baseRow As Long  … ベース行（配列の行番号）
 '   myKey As String  … 複合キー文字列
-' _
-                                  Optional matchIndex As Long = 1  … 用途を指定します。
-' _
-                                  Optional forceJoinMultiple As Boolean = False  … 用途を指定します。
+' Optional matchIndex As Long = 1  …
+' Optional forceJoinMultiple As Boolean = False  …
+
 Public Function BuildValueModeRaw(colIndex As Long, baseTbl As String, baseRow As Long, myKey As String, _
                                   Optional matchIndex As Long = 1, _
                                   Optional forceJoinMultiple As Boolean = False) As Variant
@@ -436,8 +437,7 @@ End Function
 '   baseTbl As String  … ベーステーブル名
 '   baseRow As Long  … ベース行番号
 '   myKey As String  … 複合キー文字列
-' _
-                                    Optional matchIndex As Long = 1  … 用途を指定します。
+'   Optional matchIndex As Long = 1  …
 
 Public Function BuildConcatRawValue(def As String, baseTbl As String, baseRow As Long, myKey As String, _
                                     Optional matchIndex As Long = 1) As String
@@ -450,17 +450,16 @@ Public Function BuildConcatRawValue(def As String, baseTbl As String, baseRow As
     BuildConcatRawValue = acc
 End Function
 
-' トークン解決（raw / processed）※ matchIndex 対応
 
 '--- ResolveTokenRawWithIndex ---
-' 概要: この手続きの役割を説明します。
+' 概要: トークン解決（raw / processed）※ matchIndex 対応
 ' 引数:
-'   token As String  … 用途を指定します。
-'   baseTbl As String  … 用途を指定します。
-'   baseRow As Long  … 用途を指定します。
-'   myKey As String  … 用途を指定します。
-' _
-                                          ByVal matchIndex As Long  … 用途を指定します。
+'   token As String  …
+'   baseTbl As String  …
+'   baseRow As Long  …
+'   myKey As String  …
+'   ByVal matchIndex As Long  …
+
 Private Function ResolveTokenRawWithIndex(token As String, baseTbl As String, baseRow As Long, myKey As String, _
                                           ByVal matchIndex As Long) As String
     Dim t As String, c As String, p As Long
@@ -483,26 +482,26 @@ Private Function ResolveTokenRawWithIndex(token As String, baseTbl As String, ba
 End Function
 
 '--- ResolveTokenRaw ---
-' 概要: この手続きの役割を説明します。
+' 概要: トークン解決
 ' 引数:
-'   token As String  … 用途を指定します。
-'   baseTbl As String  … 用途を指定します。
-'   baseRow As Long  … 用途を指定します。
-'   myKey As String  … 用途を指定します。
+'   token As String  …
+'   baseTbl As String  …
+'   baseRow As Long  …
+'   myKey As String  …
 
 Public Function ResolveTokenRaw(token As String, baseTbl As String, baseRow As Long, myKey As String) As String
     ResolveTokenRaw = ResolveTokenRawWithIndex(token, baseTbl, baseRow, myKey, 1)
 End Function
 
+
 '--- ResolveTokenProcessed ---
-' 概要: この手続きの役割を説明します。
+' 概要: トークン解決
 ' 引数:
-'   token As String  … 用途を指定します。
-'   baseTbl As String  … 用途を指定します。
-'   baseRow As Long  … 用途を指定します。
-'   myKey As String  … 用途を指定します。
-' _
-                                      Optional outColIndex As Long = -1  … 用途を指定します。
+'   token As String  …
+'   baseTbl As String  …
+'   baseRow As Long  …
+'   myKey As String  …
+'   Optional outColIndex As Long = -1  …
 
 Public Function ResolveTokenProcessed(token As String, baseTbl As String, baseRow As Long, myKey As String, _
                                       Optional outColIndex As Long = -1) As String
@@ -516,15 +515,15 @@ Public Function ResolveTokenProcessed(token As String, baseTbl As String, baseRo
     End If
 End Function
 
-'=== Multiテーブルから k番目の一致行の値を取る（なければ空） ===
 
 '--- GetValueFromTableMulti ---
-' 概要: この手続きの役割を説明します。
+' 概要: Multiテーブルから k番目の一致行の値を取る（なければ空）
 ' 引数:
-'   tbl As String  … 用途を指定します。
-'   col As String  … 用途を指定します。
-'   keyStr As String  … 用途を指定します。
-'   matchIndex As Long  … 用途を指定します。
+'   tbl As String  …
+'   col As String  …
+'   keyStr As String  …
+'   matchIndex As Long  …
+
 Public Function GetValueFromTableMulti(tbl As String, col As String, keyStr As String, matchIndex As Long) As String
     On Error GoTo SAFE
     Dim kd As Object: Set kd = KeyIndexMulti(tbl)
@@ -546,28 +545,27 @@ SAFE:
     GetValueFromTableMulti = ""
 End Function
 
-'=== ユーティリティ: 数値化（既存 ToNumberOrZero を流用）
 
 '--- NumVal ---
-' 概要: この手続きの役割を説明します。
+' 概要: ユーティリティ: 数値化（既存 ToNumberOrZero を流用）
 ' 引数:
-'   ByVal s As String  … 用途を指定します。
+'   ByVal s As String  …
+
 Private Function NumVal(ByVal s As String) As Double
     NumVal = CDbl(Val(ToNumberOrZero(s)))
 End Function
 
-'=== SUM( … ) の評価
 
 '--- EvalSUM ---
-' 概要: この手続きの役割を説明します。
+' 概要: SUM( … ) の評価
 ' 引数:
-'   ByVal line As String  … 用途を指定します。
-'   baseTbl As String  … 用途を指定します。
-'   baseRow As Long  … 用途を指定します。
-'   myKey As String  … 用途を指定します。
-' _
-                         ByVal processed As Boolean  … 用途を指定します。
-'   ByVal outColIndex As Long  … 用途を指定します。
+'   ByVal line As String  …
+'   baseTbl As String  …
+'   baseRow As Long  …
+'   myKey As String  …
+'   ByVal processed As Boolean  …
+'   ByVal outColIndex As Long  …
+
 Private Function EvalSUM(ByVal line As String, baseTbl As String, baseRow As Long, myKey As String, _
                          ByVal processed As Boolean, ByVal outColIndex As Long) As String
     Dim inside As String, args As Collection, i As Long, v As String, total As Double
@@ -581,7 +579,6 @@ Private Function EvalSUM(ByVal line As String, baseTbl As String, baseRow As Lon
     EvalSUM = CStr(total)
 End Function
 
-' EXPR 評価（IF/IFALL/IFANY + 数式 + テンプレ）
 
 '--- EvaluateExpr ---
 ' 概要: EXPR定義（IF/IFALL/IFANY/数式/テンプレ）を評価し、必要に応じて型最終化します。
@@ -590,9 +587,9 @@ End Function
 '   baseTbl As String  … ベーステーブル名
 '   baseRow As Long  … ベース行番号
 '   myKey As String  … 複合キー文字列
-' _
-                             ByVal processed As Boolean  … 用途を指定します。
-'   Optional outColIndex As Long = -1  … 用途を指定します。
+'   ByVal processed As Boolean  …
+'   Optional outColIndex As Long = -1  …
+
 Public Function EvaluateExpr(def As String, baseTbl As String, baseRow As Long, myKey As String, _
                              ByVal processed As Boolean, Optional outColIndex As Long = -1) As Variant
     Dim lines As Collection: Set lines = SplitExprToLines(def)
@@ -648,15 +645,16 @@ CONT:
     End If
 End Function
 
-'=== トークン置換（数式用：非数値は 0 に）
 
 '--- ReplaceTokensWithRaw ---
-' 概要: {tbl.col}トークンをraw値（非数値は0化）に置換して式文字列を組み立てます。
+' 概要: {tbl.col}トークンをraw値（非数値は0化）に置換して式文字列を組み立てる
+
 ' 引数:
 '   def As String  … 式文字列
 '   baseTbl As String  … ベーステーブル名
 '   baseRow As Long  … ベース行番号
 '   myKey As String  … 複合キー文字列
+
 Public Function ReplaceTokensWithRaw(def As String, baseTbl As String, baseRow As Long, myKey As String) As String
     Dim s As String: s = def
     Dim pos As Long, pos2 As Long, token As String, valStr As String
@@ -735,24 +733,24 @@ End Function
 '=== IF 構文群 ===
 
 '--- HasIFSyntax ---
-' 概要: この手続きの役割を説明します。
+' 概要: 文字列が IF / IFALL / IFANY 構文かどうかを判定する
 ' 引数:
-'   ByVal s As String  … 用途を指定します。
+'   ByVal s As String  …判定対象の文字列
 Private Function HasIFSyntax(ByVal s As String) As Boolean
     s = UCase$(s)
     HasIFSyntax = (Left$(s, 3) = "IF(") Or (Left$(s, 6) = "IFALL(") Or (Left$(s, 6) = "IFANY(")
 End Function
 
+
 '--- EvalIFLine ---
-' 概要: この手続きの役割を説明します。
+' 概要: 1行の IF/IFALL/IFANY 条件式を評価し、結果に応じた then/else テキストを展開
 ' 引数:
-'   ByVal line As String  … 用途を指定します。
-'   baseTbl As String  … 用途を指定します。
-'   baseRow As Long  … 用途を指定します。
-'   myKey As String  … 用途を指定します。
-' _
-                            ByVal processed As Boolean  … 用途を指定します。
-'   ByVal outColIndex As Long  … 用途を指定します。
+'   ByVal line As String  … 条件式全体（例: IF(..., "...", "...")）
+'   baseTbl As String  … ベーステーブル名
+'   baseRow As Long  … ベース行番号
+'   myKey As String  … 複合キー文字列
+' 　ByVal processed As Boolean  … 加工済み値かどうか
+'   ByVal outColIndex As Long  … 出力列インデックス
 
 Private Function EvalIFLine(ByVal line As String, baseTbl As String, baseRow As Long, myKey As String, _
                             ByVal processed As Boolean, ByVal outColIndex As Long) As String
@@ -791,19 +789,18 @@ Private Function EvalIFLine(ByVal line As String, baseTbl As String, baseRow As 
     End If
 End Function
 
+
 '--- EvalAllConditions ---
-' 概要: この手続きの役割を説明します。
+' 概要: 複数条件をすべて満たすかを判定する（AND判定）
 ' 引数:
-'   args As Collection  … 用途を指定します。
-'   idxFrom As Long  … 用途を指定します。
-'   idxTo As Long  … 用途を指定します。
-' _
-                                   baseTbl As String  … 用途を指定します。
-'   baseRow As Long  … 用途を指定します。
-'   myKey As String  … 用途を指定します。
-' _
-                                   ByVal processed As Boolean  … 用途を指定します。
-'   ByVal outColIndex As Long  … 用途を指定します。
+'   args As Collection  … 条件式一覧
+'   idxFrom As Long  … 開始インデックス
+'   idxTo As Long  … 終了インデックス
+' 　baseTbl As String  … ベーステーブル名
+'   baseRow As Long  … ベース行番号
+'   myKey As String  … 複合キー文字列
+' 　ByVal processed As Boolean  … 加工済み値の使用可否
+'   ByVal outColIndex As Long  … 出力列インデックス
 
 Private Function EvalAllConditions(args As Collection, idxFrom As Long, idxTo As Long, _
                                    baseTbl As String, baseRow As Long, myKey As String, _
@@ -817,19 +814,18 @@ Private Function EvalAllConditions(args As Collection, idxFrom As Long, idxTo As
     EvalAllConditions = True
 End Function
 
+
 '--- EvalAnyConditions ---
-' 概要: この手続きの役割を説明します。
+' 概要: 複数条件のいずれかを満たすかを判定する（OR判定）
 ' 引数:
-'   args As Collection  … 用途を指定します。
-'   idxFrom As Long  … 用途を指定します。
-'   idxTo As Long  … 用途を指定します。
-' _
-                                   baseTbl As String  … 用途を指定します。
-'   baseRow As Long  … 用途を指定します。
-'   myKey As String  … 用途を指定します。
-' _
-                                   ByVal processed As Boolean  … 用途を指定します。
-'   ByVal outColIndex As Long  … 用途を指定します。
+'   args As Collection  … 条件式一覧
+'   idxFrom As Long  … 開始インデックス
+'   idxTo As Long  … 終了インデックス
+' 　baseTbl As String  … ベーステーブル名
+'   baseRow As Long  … ベース行番号
+'   myKey As String  … 複合キー文字列
+' 　ByVal processed As Boolean  … 加工済み値の使用可否
+'   ByVal outColIndex As Long  … 出力列インデックス
 
 Private Function EvalAnyConditions(args As Collection, idxFrom As Long, idxTo As Long, _
                                    baseTbl As String, baseRow As Long, myKey As String, _
@@ -844,15 +840,14 @@ Private Function EvalAnyConditions(args As Collection, idxFrom As Long, idxTo As
 End Function
 
 '--- EvalOneCondition ---
-' 概要: この手続きの役割を説明します。
+' 概要: 単一条件を評価する（LIKE/STARTSWITH/ENDSWITH/CONTAINS/等号判定）
 ' 引数:
-'   cond As String  … 用途を指定します。
-'   baseTbl As String  … 用途を指定します。
-'   baseRow As Long  … 用途を指定します。
-'   myKey As String  … 用途を指定します。
-' _
-                                  ByVal processed As Boolean  … 用途を指定します。
-'   ByVal outColIndex As Long  … 用途を指定します。
+'   cond As String  … 条件式（例: {tbl.col}="ABC"）
+'   baseTbl As String  … ベーステーブル名
+'   baseRow As Long  … ベース行番号
+'   myKey As String  … 複合キー文字列
+' 　ByVal processed As Boolean  … 加工済み値の使用可否
+'   ByVal outColIndex As Long  … 出力列インデックス
 
 Private Function EvalOneCondition(cond As String, baseTbl As String, baseRow As Long, myKey As String, _
                                   ByVal processed As Boolean, ByVal outColIndex As Long) As Boolean
@@ -910,16 +905,16 @@ Private Function EvalOneCondition(cond As String, baseTbl As String, baseRow As 
 '    WriteLog "DEBUG", "[COND =] actual='" & actual & "' expected='" & expected & "' -> " & EvalOneCondition
 End Function
 
+
 '--- EvalIFALL ---
-' 概要: この手続きの役割を説明します。
+' 概要: IFALL 構文を評価（すべての条件が真なら True）
 ' 引数:
-'   argList As String  … 用途を指定します。
-'   baseTbl As String  … 用途を指定します。
-'   baseRow As Long  … 用途を指定します。
-'   myKey As String  … 用途を指定します。
-' _
-                           ByVal processed As Boolean  … 用途を指定します。
-'   ByVal outColIndex As Long  … 用途を指定します。
+'   argList As String  … 条件式のカンマ区切りリスト
+'   baseTbl As String  … ベーステーブル名
+'   baseRow As Long  … ベース行番号
+'   myKey As String  … 複合キー文字列
+' 　ByVal processed As Boolean  … 加工済み値の使用可否
+'   ByVal outColIndex As Long  … 出力列インデックス
 
 Private Function EvalIFALL(argList As String, baseTbl As String, baseRow As Long, myKey As String, _
                            ByVal processed As Boolean, ByVal outColIndex As Long) As Boolean
@@ -944,16 +939,16 @@ Private Function EvalIFALL(argList As String, baseTbl As String, baseRow As Long
     Next i
 End Function
 
+
 '--- GetScalarValue ---
-' 概要: この手続きの役割を説明します。
+' 概要: LEFT/RIGHT/MID/LEN 関数や {tbl.col} のトークンを評価し、値を返す（正規化あり）
 ' 引数:
-'   expr As String  … 用途を指定します。
-'   baseTbl As String  … 用途を指定します。
-'   baseRow As Long  … 用途を指定します。
-'   myKey As String  … 用途を指定します。
-' _
-                                ByVal processed As Boolean  … 用途を指定します。
-'   ByVal outColIndex As Long  … 用途を指定します。
+'   expr As String  … 評価対象の式やトークン
+'   baseTbl As String  … ベーステーブル名
+'   baseRow As Long  … ベース行番号
+'   myKey As String  … 複合キー文字列
+' 　ByVal processed As Boolean  … 加工済み値の使用可否
+'   ByVal outColIndex As Long  … 出力列インデックス
 
 Private Function GetScalarValue(expr As String, baseTbl As String, baseRow As Long, myKey As String, _
                                 ByVal processed As Boolean, ByVal outColIndex As Long) As String
@@ -1012,12 +1007,13 @@ Private Function GetScalarValue(expr As String, baseTbl As String, baseRow As Lo
     GetScalarValue = NormalizeText(raw)
 End Function
 
+
 '=== 文字列ユーティリティ ===
 
 '--- StripQuotes ---
-' 概要: この手続きの役割を説明します。
+' 概要: 文字列を囲むシングル/ダブルクォートを外す
 ' 引数:
-'   ByVal s As String  … 用途を指定します。
+'   ByVal s As String  … 対象文字列
 Private Function StripQuotes(ByVal s As String) As String
     s = Trim$(s)
     If (Left$(s, 1) = "'" And Right$(s, 1) = "'") Or (Left$(s, 1) = """" And Right$(s, 1) = """") Then
@@ -1027,10 +1023,11 @@ Private Function StripQuotes(ByVal s As String) As String
     End If
 End Function
 
+
 '--- SplitArgs ---
-' 概要: この手続きの役割を説明します。
+' 概要: カンマ区切りの文字列を引数ごとに分割（クォート内カンマは除外）
 ' 引数:
-'   ByVal s As String  … 用途を指定します。
+'   ByVal s As String  … カンマ区切り文字列
 
 Private Function SplitArgs(ByVal s As String) As Collection
     Dim col As New Collection
@@ -1054,10 +1051,11 @@ Private Function SplitArgs(ByVal s As String) As Collection
     Set SplitArgs = col
 End Function
 
+
 '--- SplitDefToParts ---
-' 概要: この手続きの役割を説明します。
+' 概要: 定義文字列を改行または "|" で分割し、空行を除外してコレクション化
 ' 引数:
-'   ByVal def As String  … 用途を指定します。
+'   ByVal def As String  … 定義文字列
 
 Public Function SplitDefToParts(ByVal def As String) As Collection
     Dim col As New Collection, tmp As String
@@ -1072,20 +1070,19 @@ Public Function SplitDefToParts(ByVal def As String) As Collection
 End Function
 
 '--- SplitExprToLines ---
-' 概要: この手続きの役割を説明します。
+' 概要: 式定義文字列を行単位に分割して返す（内部的に SplitDefToParts を使用）
 ' 引数:
-'   ByVal def As String  … 用途を指定します。
+'   ByVal def As String  … 式定義文字列
 
 Public Function SplitExprToLines(ByVal def As String) As Collection
     Set SplitExprToLines = SplitDefToParts(def)
 End Function
 
-' 後段の加工（型変換のみ／IFや式はEXPRで）
 
 '--- ApplyTransformSmart ---
-' 概要: この手続きの役割を説明します。
+' 概要: 後段の加工（型変換のみ／IFや式はEXPRで）
 ' 引数:
-'   src As Variant  … 用途を指定します。
+'   src As Variant  …
 Public Function ApplyTransformSmart(src As Variant) As Variant
     Dim rows As Long, cols As Long
     rows = UBound(src, 1): cols = UBound(src, 2)
@@ -1110,9 +1107,9 @@ Public Function ApplyTransformSmart(src As Variant) As Variant
 End Function
 
 '--- GetKeyForRow ---
-' 概要: この手続きの役割を説明します。
+' 概要: 出力行からベーステーブルのキー文字列を取得
 ' 引数:
-'   r As Long  … 用途を指定します。
+'   r As Long  … 出力行番号
 
 Private Function GetKeyForRow(r As Long) As String
     Dim baseArr As Variant, baseKeyCols() As Long
@@ -1122,13 +1119,12 @@ Private Function GetKeyForRow(r As Long) As String
     GetKeyForRow = BuildKeyFromRow(baseArr, m_baseRowIdx(r), baseKeyCols)
 End Function
 
-' 単値の型変換のみ（ロジック置換は廃止）
 
 '--- ApplyOneValueTransform ---
-' 概要: この手続きの役割を説明します。
+' 概要: 単値の型変換のみ（ロジック置換は廃止）
 ' 引数:
-'   v As Variant  … 用途を指定します。
-'   dataType As String  … 用途を指定します。
+'   v As Variant  …
+'   dataType As String  …
 Public Function ApplyOneValueTransform(v As Variant, dataType As String) As String
     Dim w As Variant: w = v
     Select Case UCase$(dataType)
@@ -1139,12 +1135,11 @@ Public Function ApplyOneValueTransform(v As Variant, dataType As String) As Stri
     ApplyOneValueTransform = CStr(w)
 End Function
 
-' 四則演算（安全版）
 
 '--- SafeEval ---
-' 概要: この手続きの役割を説明します。
+' 概要: 四則演算
 ' 引数:
-'   ByVal expr As String  … 用途を指定します。
+'   ByVal expr As String  …
 Public Function SafeEval(ByVal expr As String) As Double
     expr = Replace(expr, " ", "")
     Dim nums() As Double, ops() As String, nTop As Long, oTop As Long
@@ -1185,9 +1180,9 @@ CONT:
 End Function
 
 '--- Precedence ---
-' 概要: この手続きの役割を説明します。
+' 概要: 演算子の優先順位を返す（+, - は1、*, / は2）
 ' 引数:
-'   op As String  … 用途を指定します。
+'   op As String  … 演算子文字列
 
 Private Function Precedence(op As String) As Long
     Select Case op
@@ -1198,9 +1193,12 @@ Private Function Precedence(op As String) As Long
 End Function
 
 '--- ApplyOp ---
-' 概要: この手続きの役割を説明します。
+' 概要: スタック上の2つの数値に対して演算子を適用し、結果を数値スタックへ戻す
 ' 引数:
-'   ByRef nums(  … 用途を指定します。
+'   ByRef nums() As Double … 数値スタック
+'   ByRef nTop As Long     … 数値スタックのトップインデックス
+'   ByRef ops() As String  … 演算子スタック
+'   ByRef oTop As Long     … 演算子スタックのトップインデックス
 
 Private Sub ApplyOp(ByRef nums() As Double, ByRef nTop As Long, ByRef ops() As String, ByRef oTop As Long)
     If nTop < 2 Or oTop = 0 Then Exit Sub
@@ -1217,13 +1215,12 @@ Private Sub ApplyOp(ByRef nums() As Double, ByRef nTop As Long, ByRef ops() As S
     nTop = nTop + 1: ReDim Preserve nums(1 To nTop): nums(nTop) = res
 End Sub
 
-' 追加：EXPR最終型の整形（NUMBER/DATE等）
 
 '--- FinalizeByType ---
-' 概要: この手続きの役割を説明します。
+' 概要: EXPR最終型の整形（NUMBER/DATE等）
 ' 引数:
-'   ByVal s As String  … 用途を指定します。
-'   ByVal dataType As String  … 用途を指定します。
+'   ByVal s As String  …
+'   ByVal dataType As String  …
 Private Function FinalizeByType(ByVal s As String, ByVal dataType As String) As String
     Select Case UCase$(dataType)
         Case "NUMBER"
@@ -1247,17 +1244,15 @@ Private Function FinalizeByType(ByVal s As String, ByVal dataType As String) As 
     End Select
 End Function
 
-' 追加：インポート専用の値取得
 
 '--- BuildRawValueIgnoringMode ---
-' 概要: この手続きの役割を説明します。
+' 概要: インポート専用の値取得
 ' 引数:
-'   colIndex As Long  … 用途を指定します。
-'   baseTbl As String  … 用途を指定します。
-'   baseRow As Long  … 用途を指定します。
-'   myKey As String  … 用途を指定します。
-' _
-                                          Optional matchIndex As Long = 1  … 用途を指定します。
+'   colIndex As Long  …
+'   baseTbl As String  …
+'   baseRow As Long  …
+'   myKey As String  …
+' 　Optional matchIndex As Long = 1  …
 Public Function BuildRawValueIgnoringMode(colIndex As Long, baseTbl As String, baseRow As Long, myKey As String, _
                                           Optional matchIndex As Long = 1) As String
     Dim t As Long, acc As String: acc = ""
@@ -1296,3 +1291,4 @@ CONT_T:
     Next
     BuildRawValueIgnoringMode = acc
 End Function
+
