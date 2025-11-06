@@ -1,21 +1,22 @@
 Option Explicit
 '============================================================
 ' modMain
-' 概要: ボタンやショートカットから各処理（Import/Process/Clear/Export）を呼び出すエントリーポイント。パイプライン切替のUIラッパーも含みます。
+' 概要: ボタンやショートカットから各処理（Import/Process/Clear/Export）を呼び出す
 '============================================================
 
-'=== ショートカット割り当て（任意） ===
-' 概要: ワークブックにキーボードショートカットを割り当て、Import/Process/Clear/Export を即時呼び出せるようにします。
+
+'=== ショートカット割り当て ===
+' 概要: ワークブックにキーボードショートカットを割り当て、Import/Process/Clear/Export を呼び出す
 ' 備考: 割当: Ctrl+Shift+I/P/C/E。
-' 備考: Excelのスコープに割当るため、他ブックでも効く点に注意。
 Public Sub SetupShortcuts()
     Application.OnKey "^+I", "ImportFiles"   ' Ctrl+Shift+I
     Application.OnKey "^+P", "ProcessData"   ' Ctrl+Shift+P
     Application.OnKey "^+D", "ClearData"     ' Ctrl+Shift+C
     Application.OnKey "^+E", "ExportCSV"     ' Ctrl+Shift+E
 End Sub
-' 概要: SetupShortcuts で設定したショートカットを解除します。
 
+
+' 概要: SetupShortcuts で設定したショートカットを解除します。
 Public Sub RemoveShortcuts()
     Application.OnKey "^+I"
     Application.OnKey "^+P"
@@ -23,42 +24,50 @@ Public Sub RemoveShortcuts()
     Application.OnKey "^+E"
 End Sub
 
+
 '=== 画面ボタン用 ===
 Public Sub SetPipeline_Main()
     UsePipelineMain
     MsgBox "パイプラインを Main に切替えました。", vbInformation
 End Sub
 
+
 Public Sub SetPipeline_List()
     UsePipelineList
     MsgBox "パイプラインを List に切替えました。", vbInformation
 End Sub
 
+
 Public Sub Btn_ChooseEncoding()
     ChooseEncoding
 End Sub
-' 概要: Import ボタンのクリックハンドラ。パイプライン選択を受け取り、WithPerfGuardArgs で Import 実処理を呼び出します。
+
+
+' 概要: Import ボタンのクリックハンドラ。パイプライン選択を受け取り、WithPerfGuardArgs で Import 実処理を呼び出す
 ' 引数:
 '   pipeLine  … 選択パイプライン（"Main"|"List"）
 ' 備考: 進捗表示・速度最適化は WithPerfGuardArgs 側で面倒を見ます。
-
 Public Sub Btn_Import(pipeLine)
     WithPerfGuardArgs "modProcess.Run_Import", True, pipeLine
 End Sub
-' 概要: Process ボタンのクリックハンドラ。WithPerfGuardArgs で Process 実処理を起動します。
+
+
+' 概要: Process ボタンのクリックハンドラ。WithPerfGuardArgs で Process 実処理を起動
 ' 引数:
 '   pipeLine  … 選択パイプライン（"Main"|"List"）
-
 Public Sub Btn_Process(pipeLine)
     WithPerfGuardArgs "modProcess.Run_Process", True, pipeLine
 End Sub
-' 概要: Clear ボタンのクリックハンドラ。マスターテーブルなどの作業領域をクリアします。
 
+
+' 概要: Clear ボタンのクリックハンドラ。マスターテーブルなどの作業領域をクリア
 Public Sub Btn_Clear()
     ClearData
 End Sub
-' 概要: Export ボタンのクリックハンドラ。現在のマスターをCSVとして書き出します。
 
+
+' 概要: Export ボタンのクリックハンドラ。現在のマスターをCSVとして書き出す
 Public Sub Btn_Export()
     ExportCSV
 End Sub
+
