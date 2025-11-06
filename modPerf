@@ -1,7 +1,7 @@
 Option Explicit
 '============================================================
 ' modPerf
-' 概要: 大量データのインポート/加工の実行時パフォーマンスと進捗表示を補助するユーティリティ。
+' 概要: 大量データのインポート/加工の実行時パフォーマンスと進捗表示を補助するユーティリティ
 '      - WithPerfGuard / WithPerfGuardArgs: 計算/画面更新/イベント/警告を停止して安全実行（終了時に復元）
 '      - 配列→ListObjectへのチャンク書き込み
 '      - CSVの行チャンク読み込み＋即貼付
@@ -21,11 +21,13 @@ Private mProgCurrent As Long
 Private mProgLabel As String
 Private mPulseIdx As Long
 
+
 '================ WithPerfGuard (引数なし) ===================
-' 概要: 画面更新/計算/イベント/警告を一時停止し、処理後に復元するガード。処理時間短縮と安定化を担います。
+' 概要: 画面更新/計算/イベント/警告を一時停止し、処理後に復元
 ' 引数:
 '   ByVal procName As String  … 呼び出し先 'Module.Procedure' 名
-' 備考: 例外発生時も確実に復元。
+' 備考: 例外発生時も確実に復元
+
 Public Sub WithPerfGuard(ByVal runBody As String, Optional ByVal showProgress As Boolean = True)
     Dim st As TAppState
     On Error GoTo EH
@@ -62,11 +64,12 @@ End Sub
 
 '================ WithPerfGuardArgs (引数あり) ================
 ' 概要: Application.Run に引数を渡したい場合はこちらを使用
-' 概要: WithPerfGuard の引数付き版。ProcName と引数1つを受け取り Application.Run で呼び出します。
+' 概要: WithPerfGuard の引数付き版。ProcName と引数1つを受け取り Application.Run で呼び出す
 ' 引数:
 '   ByVal procName As String  … 呼び出し先 'Module.Procedure' 名
 '   ByVal showProgress As Boolean  … 進捗表示を有効化するか
 '   ByVal arg1 As Variant  … 呼び先に渡す引数
+
 Public Sub WithPerfGuardArgs(ByVal runBody As String, ByVal showProgress As Boolean, ParamArray args() As Variant)
     Dim st As TAppState
     On Error GoTo EH
@@ -114,10 +117,12 @@ EH:
     Err.Raise Err.Number, Err.Source, Err.Description
 End Sub
 
+
 '================ Progress API ===============================
-' 概要: 進捗バーを初期化し、ステータス文字列を表示します。
+' 概要: 進捗バーを初期化し、ステータス文字列を表示
 ' 引数:
 '   msg As String  … 開始メッセージ
+
 Public Sub BeginProgress(ByVal total As Long, ByVal label As String)
     mProgTotal = IIf(total < 1, 1, total)
     mProgCurrent = 0
@@ -134,6 +139,8 @@ Public Sub StepProgress(ByVal current As Long)
     pct = CLng((mProgCurrent / mProgTotal) * 100)
     Application.StatusBar = mProgLabel & " " & pct & "% (" & mProgCurrent & "/" & mProgTotal & ")"
 End Sub
+
+
 ' 概要: 進捗バーを更新し、任意のメッセージを表示します。UI応答性を確保するため DoEvents も呼びます。
 ' 引数:
 '   msg As String  … 表示メッセージ
@@ -150,6 +157,8 @@ Public Sub Pulse(ByVal label As String)
     Application.StatusBar = label & " " & spinner
     DoEvents
 End Sub
+
+
 ' 概要: 進捗バーを完了状態にしてメッセージを表示します。
 ' 引数:
 '   msg As String  … 完了メッセージ
@@ -159,6 +168,7 @@ Public Sub EndProgress(Optional ByVal label As String = "完了")
 End Sub
 
 '================ ListObject 書き込み ========================
+
 Public Sub WriteArrayToListObjectChunked(ByVal lo As ListObject, ByRef data2D As Variant, _
     ByVal startRow As Long, ByVal chunkRows As Long, Optional ByVal pulseLabel As String = "書き込み中")
     Dim totalRows As Long, totalCols As Long
@@ -206,7 +216,8 @@ Private Function SliceRows(ByRef data As Variant, ByVal r0 As Long, ByVal r1 As 
     SliceRows = o
 End Function
 
-'================ CSV チャンク読み込み =======================
+'================ CSV 読み込み =======================
+
 Public Sub ImportCsvChunked(ByVal filePath As String, ByVal lo As ListObject, _
     Optional ByVal headerRows As Long = 1, Optional ByVal chunkRows As Long = 1000, _
     Optional ByVal delim As String = "")
@@ -321,11 +332,13 @@ Private Function SplitCsvLine(ByVal line As String, ByVal delim As String) As Va
     SplitCsvLine = res
 End Function
 
+
 '================ ListObject 補助 ============================
-' 概要: 指定 ListObject のデータ行が配列貼付に十分な行数か確認し、不足時に拡張します。
+' 概要: 指定 ListObject のデータ行が配列貼付に十分な行数か確認し、不足時に拡張
 ' 引数:
 '   lo As ListObject  … 対象テーブル
 '   rows As Long  … 必要行数（ヘッダ除く）
+
 Public Sub EnsureTableDataRows(ByVal lo As ListObject, ByVal needRows As Long)
     Dim cur As Long
     On Error GoTo EH
@@ -345,6 +358,8 @@ Public Sub EnsureTableDataRows(ByVal lo As ListObject, ByVal needRows As Long)
 EH:
     Err.Raise Err.Number, Err.Source, Err.Description
 End Sub
+
+
 ' 概要: ListObject のヘッダを指定配列の1行目と一致させます（不足列の追加・余剰列の削除）。
 ' 引数:
 '   lo As ListObject  … 対象テーブル
@@ -367,6 +382,8 @@ Public Sub EnsureTableHeader(ByVal lo As ListObject, ByRef headers As Variant)
         lo.ListColumns(i).name = headers(i - 1)
     End If
 End Sub
+
+
 ' 概要: ListObject のデータ行を高速消去。表示更新を抑制しつつ効率よく初期化します。
 ' 引数:
 '   lo As ListObject  … クリア対象テーブル
