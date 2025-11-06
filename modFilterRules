@@ -4,6 +4,7 @@ Option Explicit
 ' 概要: Filter_Rules（または Filter_RulesSimple）表に基づく条件抽出。グループAND／グループ間ORの組合せでTableDataを絞り込みます。
 '============================================================
 
+
 ' Filter_RulesSimple（テーブル名）を読み込んで
 ' 各ベーステーブルごとのフィルタ規則に分配し、
 ' TableData(<対象テーブル>) を行単位で絞り込みます。
@@ -21,7 +22,8 @@ Option Explicit
 '=== 入口：フィルタ読込→適用（ImportFiles内から呼ぶ想定） ===
 
 '--- ApplyFiltersIfExist ---
-' 概要: Filter_Rules表があればルールに基づきTableDataを絞り込みます。
+' 概要: Filter_Rules表があればルールに基づきTableDataを絞り込む
+
 Public Sub ApplyFiltersIfExist()
     Dim lo As ListObject
     Set lo = GetListObjectByName("Filter_Rules")
@@ -58,12 +60,13 @@ Public Sub ApplyFiltersIfExist()
     Next
 End Sub
 
+
 '=== ルール読み込み（1ルール=Dictionary） ===
 
 '--- ReadRulesFromListObject ---
-' 概要: この手続きの役割を説明します。
+' 概要:
 ' 引数:
-'   lo As ListObject  … 用途を指定します。
+'   lo As ListObject  …
 Private Function ReadRulesFromListObject(lo As ListObject) As Collection
     Dim col As New Collection
     Dim r As Long, lastRow As Long
@@ -91,22 +94,24 @@ Private Function ReadRulesFromListObject(lo As ListObject) As Collection
     Set ReadRulesFromListObject = col
 End Function
 
+
 '--- IsEnabled ---
-' 概要: この手続きの役割を説明します。
+' 概要:
 ' 引数:
-'   v As Variant  … 用途を指定します。
+'   v As Variant  …
 
 Private Function IsEnabled(v As Variant) As Boolean
     Dim s As String: s = UCase$(Trim$(CStr(v)))
     IsEnabled = (s = "○" Or s = "1" Or s = "TRUE" Or s = "YES" Or s = "有効")
 End Function
 
+
 '=== テーブル名→(GroupId→ルール群) に分配 ===
 
 '--- GroupRulesByTable ---
-' 概要: この手続きの役割を説明します。
+' 概要:
 ' 引数:
-'   rules As Collection  … 用途を指定します。
+'   rules As Collection  …
 Private Function GroupRulesByTable(rules As Collection) As Object
     Dim tblMap As Object: Set tblMap = CreateObject("Scripting.Dictionary")
     Dim i As Long
@@ -125,13 +130,14 @@ Private Function GroupRulesByTable(rules As Collection) As Object
     Set GroupRulesByTable = tblMap
 End Function
 
+
 '=== OR(グループ) / AND(各グループ内) で配列を絞る ===
 
 '--- FilterArrayByGroups ---
-' 概要: この手続きの役割を説明します。
+' 概要:
 ' 引数:
-'   arr As Variant  … 用途を指定します。
-'   grouped As Object  … 用途を指定します。
+'   arr As Variant  …
+'   grouped As Object  …
 Private Function FilterArrayByGroups(arr As Variant, grouped As Object) As Variant
     On Error GoTo EH
     If Not IsArray(arr) Then FilterArrayByGroups = arr: Exit Function
@@ -185,13 +191,14 @@ EH:
     FilterArrayByGroups = arr
 End Function
 
+
 '--- RowMatchesGroups ---
-' 概要: この手続きの役割を説明します。
+' 概要:
 ' 引数:
-'   arr As Variant  … 用途を指定します。
-'   r As Long  … 用途を指定します。
-'   colIdx As Object  … 用途を指定します。
-'   grouped As Object  … 用途を指定します。
+'   arr As Variant  …
+'   r As Long  …
+'   colIdx As Object  …
+'   grouped As Object  …
 
 Private Function RowMatchesGroups(arr As Variant, r As Long, colIdx As Object, grouped As Object) As Boolean
     Dim g As Variant
@@ -204,13 +211,14 @@ Private Function RowMatchesGroups(arr As Variant, r As Long, colIdx As Object, g
     RowMatchesGroups = False
 End Function
 
+
 '--- RowMatchesOneGroup ---
-' 概要: この手続きの役割を説明します。
+' 概要:
 ' 引数:
-'   arr As Variant  … 用途を指定します。
-'   r As Long  … 用途を指定します。
-'   colIdx As Object  … 用途を指定します。
-'   rules As Collection  … 用途を指定します。
+'   arr As Variant  …
+'   r As Long  …
+'   colIdx As Object  …
+'   rules As Collection  …
 
 Private Function RowMatchesOneGroup(arr As Variant, r As Long, colIdx As Object, rules As Collection) As Boolean
     Dim i As Long
@@ -223,13 +231,14 @@ Private Function RowMatchesOneGroup(arr As Variant, r As Long, colIdx As Object,
     RowMatchesOneGroup = True
 End Function
 
+
 '--- RowMatchesOneRule ---
-' 概要: この手続きの役割を説明します。
+' 概要:
 ' 引数:
-'   arr As Variant  … 用途を指定します。
-'   r As Long  … 用途を指定します。
-'   colIdx As Object  … 用途を指定します。
-'   rule As Object  … 用途を指定します。
+'   arr As Variant  …
+'   r As Long  …
+'   colIdx As Object  …
+'   rule As Object  …
 
 Private Function RowMatchesOneRule(arr As Variant, r As Long, colIdx As Object, rule As Object) As Boolean
     Dim cKey As String: cKey = AddNorm(CStr(rule("ColName")))
@@ -271,9 +280,9 @@ End Function
 '=== 文字列正規化（BOM除去＋Trim） ===
 
 '--- AddNorm ---
-' 概要: この手続きの役割を説明します。
+' 概要:
 ' 引数:
-'   ByVal s As String  … 用途を指定します。
+'   ByVal s As String  …
 Private Function AddNorm(ByVal s As String) As String
     If Len(s) = 0 Then AddNorm = "": Exit Function
     s = Replace$(s, ChrW(&HFEFF), "")
@@ -284,10 +293,10 @@ End Function
 '=== 比較：IN（Val1 をカンマ区切り） ===
 
 '--- ValueInList ---
-' 概要: この手続きの役割を説明します。
+' 概要:
 ' 引数:
-'   v As Variant  … 用途を指定します。
-'   listCsv As String  … 用途を指定します。
+'   v As Variant  …
+'   listCsv As String  …
 Private Function ValueInList(v As Variant, listCsv As String) As Boolean
     Dim parts() As String, i As Long, meS As String
     meS = CStr(v)
@@ -303,10 +312,10 @@ End Function
 '=== 比較：LIKE（* と ? に対応。正規表現ではなく VBA Like） ===
 
 '--- LikeMatch ---
-' 概要: この手続きの役割を説明します。
+' 概要:
 ' 引数:
-'   ByVal s As String  … 用途を指定します。
-'   ByVal pat As String  … 用途を指定します。
+'   ByVal s As String  …
+'   ByVal pat As String  …
 Private Function LikeMatch(ByVal s As String, ByVal pat As String) As Boolean
     LikeMatch = (CStr(s) Like CStr(pat))
 End Function
@@ -314,11 +323,11 @@ End Function
 '=== 比較：スカラー（=, <>, >, >=, <, <=） ===
 
 '--- CompareScalar ---
-' 概要: この手続きの役割を説明します。
+' 概要:
 ' 引数:
-'   v As Variant  … 用途を指定します。
-'   op As String  … 用途を指定します。
-'   rhs As String  … 用途を指定します。
+'   v As Variant  …
+'   op As String  …
+'   rhs As String  …
 Private Function CompareScalar(v As Variant, op As String, rhs As String) As Boolean
     Dim a As Variant, b As Variant
     a = v: b = rhs
@@ -332,11 +341,11 @@ Private Function CompareScalar(v As Variant, op As String, rhs As String) As Boo
 End Function
 
 '--- CompareBetween ---
-' 概要: この手続きの役割を説明します。
+' 概要:
 ' 引数:
-'   v As Variant  … 用途を指定します。
-'   low As String  … 用途を指定します。
-'   high As String  … 用途を指定します。
+'   v As Variant  …
+'   low As String  …
+'   high As String  …
 
 Private Function CompareBetween(v As Variant, low As String, high As String) As Boolean
     Dim a As Variant, lo As Variant, hi As Variant
@@ -353,11 +362,11 @@ Private Function CompareBetween(v As Variant, low As String, high As String) As 
 End Function
 
 '--- CompareByOp ---
-' 概要: この手続きの役割を説明します。
+' 概要:
 ' 引数:
-'   a As Variant  … 用途を指定します。
-'   op As String  … 用途を指定します。
-'   b As Variant  … 用途を指定します。
+'   a As Variant  …
+'   op As String  …
+'   b As Variant  …
 
 Private Function CompareByOp(a As Variant, op As String, b As Variant) As Boolean
     Select Case op
@@ -370,3 +379,4 @@ Private Function CompareByOp(a As Variant, op As String, b As Variant) As Boolea
         Case Else:  CompareByOp = False
     End Select
 End Function
+
