@@ -48,20 +48,22 @@ Public m_baseRowIdx() As Long
 '=== 追加：インポート時はモードを無視するフラグ ===
 Public IgnoreModeOnImport As Boolean
 
-' 共通関数
 
 '--- TimeStamp ---
-' 概要: 現在日時を 'yyyymmddhhmmss' 形式の文字列で返します。
+' 概要: 現在日時を 'yyyymmddhhmmss' 形式の文字列で返す
 ' 戻り値: タイムスタンプ文字列（例: 20251027xxxxxx）
+
 Public Function TimeStamp() As String
     TimeStamp = Format(Now, "yyyymmddhhmmss")
 End Function
 
+
 '--- IsArrayInitialized ---
-' 概要: Variant が配列として初期化済みかを安全に判定します（未確保/未初期化配列は False）。
+' 概要: Variant が配列として初期化済みかを安全に判定（未確保/未初期化配列は False）
 ' 引数:
 '   ByVal v As Variant  … 判定対象
 ' 戻り値: True: 配列で LBound 参照に成功 / False: それ以外
+
 Public Function IsArrayInitialized(ByVal v As Variant) As Boolean
     On Error GoTo EH
     If IsArray(v) Then
@@ -74,11 +76,13 @@ EH:
     IsArrayInitialized = False
 End Function
 
+
 '--- IsAllocated_Long ---
-' 概要: Long 配列が確保済みかを安全に判定します（未確保/未初期化配列は False）。
+' 概要: Long 配列が確保済みかを安全に判定（未確保/未初期化配列は False）
 ' 引数:
 '   ByRef arr() As Long  … 判定対象の Long 配列
 ' 戻り値: True: 配列で LBound 参照に成功 / False: それ以外
+
 Public Function IsAllocated_Long(ByRef arr() As Long) As Boolean
     On Error GoTo EH
     Dim lb As Long
