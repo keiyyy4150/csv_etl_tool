@@ -1,10 +1,38 @@
-ImportFiles のコメントアウトを参考に、処理を細かく記載したいです。
-あと、以下のような表記になっている箇所はその処理に合わせて修正したいです・
-' 概要: この手続きの役割を説明します。
-' 引数:
-'   lo As ListObject  … 用途を指定します。
-'   idxId As Long  … 用途を指定します。
-'   idxVer As Long  … 用途を指定します。
-'   defId As String  … 用途を指定します。
+いい質問です。結論だけ先に：
+	•	その理解はあと一歩です。
+	•	出力列「作成者」には UserAccountMap 側の new_id を指定してください。
+	•	キー行は別に1行用意して、そこでキャンペーン側の「作成者CD」と UserAccountMap 側の old_id を対応づけます（ここに◯を付ける）。
 
-全体的に、不要なものは削除してキレイ化したいです。（順番が変な箇所など）　コード自体はいったん変えないでください。
+⸻
+
+最小構成の具体例（Mappingの2行でOK）
+
+ヘッダー（固定列の右側）は、元テーブル名として Campaign と UserAccountMap が並んでいる想定です。
+
+出力カラム	データ型	キー	モード	定義ID	Campaign 列セル	UserAccountMap 列セル
+作成者	TEXT	(空)	VALUE	(空)	(空)	new_id
+作成者CD（キー用）	TEXT	○	VALUE	(空)	作成者CD	old_id
+
+	•	上段（出力列「作成者」）
+	•	ここが最終的に出したい値なので、UserAccountMap 側に new_id を書きます（Campaign 側は空でOK）。
+	•	実行時は、ベース行のキーで UserAccountMap.new_id をO(1)で引き当てます。
+	•	下段（キー定義用のダミー行）
+	•	キー=○ を付け、Campaign 側に 作成者CD、UserAccountMap 側に old_id を書きます。
+	•	これで両テーブルのキー索引が組まれ、Campaign.作成者CD = UserAccountMap.old_id でJOINできる状態になります。 ￼
+	•	「作成者CD（キー用）」列はMasterに出てしまいます。出力したくなければエクスポート時に列除外するか、列名に _ を付けて後段で落とす等の運用にしてください。
+
+⸻
+
+仕組みの裏付け（ざっくり技術）
+	•	どの列をキーにするかは、「キー=○」の行で、**各テーブル列に書いた“元カラム名”**から自動的に収集されます（BuildKeyIndexes）。 ￼
+	•	ベーステーブルの選定は「キー=○行で元カラムが埋まっている最初のテーブル」が選ばれます（今回は Campaign）。 ￼
+	•	値の取り出しは VALUE 行なら ベース→他テーブルの順に見に行き、他テーブルは GetValueFromTableMulti(tbl, col, key) で キー一致の値を返します。
+	•	Import時は無加工JOIN（モード無視）でMasterに貼られ、Process時に改めて評価＆型最終化、という二段構えです。
+
+⸻
+
+まとめ（質問への直答）
+	•	「作成者CD」はキー行で Campaign 側に書き、対になる UserAccountMap 側は old_id を書きます（ここに◯）。 ￼
+	•	「作成者」出力列は UserAccountMap 側に new_id を書きます（キーは付けない）。 ￼
+
+この2行で、Definitions直書きのIF連打なしに、作成者CD → 作成者（ID置換）が超高速に回るようになります。
