@@ -329,3 +329,4 @@ EH:
     EndProgress "加工中断"
     Err.Raise Err.Number, Err.Source, Err.Description
 End Sub
+
