@@ -27,6 +27,10 @@ Public TableData As Object
 Public KeyIndexSingle As Object
 Public KeyIndexMulti  As Object
 
+'=== ★ 追加：LOOKUP用の単列インデックスキャッシュ ===
+' Key: "<tbl>|<findCol>" → Value: Dictionary(findVal -> rowIndex)
+Public LookupIndex As Object
+
 ' 無加工JOIN済みの中間データ
 Public RawJoined As Variant
 Public HasRaw As Boolean
@@ -34,8 +38,6 @@ Public IsProcessed As Boolean
 
 ' Mappingキャッシュ
 Public Map_OutCols()  As String
-Public Map_JoinKey() As String   ' 出力列ごとの JoinKey 定義（H列）
-
 Public Map_DataType() As String
 Public Map_IsKey()    As Boolean
 Public Map_Mode()     As String
@@ -50,19 +52,12 @@ Public m_baseRowIdx() As Long
 '=== 追加：インポート時はモードを無視するフラグ ===
 Public IgnoreModeOnImport As Boolean
 
-' 共通関数
-
 '--- TimeStamp ---
-' 概要: この手続きの役割を説明します。
 Public Function TimeStamp() As String
     TimeStamp = Format(Now, "yyyymmddhhmmss")
 End Function
 
 '--- IsArrayInitialized ---
-' 概要: この手続きの役割を説明します。
-' 引数:
-'   ByVal v As Variant  … 用途を指定します。
-
 Public Function IsArrayInitialized(ByVal v As Variant) As Boolean
     On Error GoTo EH
     If IsArray(v) Then
@@ -71,21 +66,8 @@ Public Function IsArrayInitialized(ByVal v As Variant) As Boolean
         IsArrayInitialized = True
         Exit Function
     End If
-EH:
     IsArrayInitialized = False
-End Function
-
-'--- IsAllocated_Long ---
-' 概要: この手続きの役割を説明します。
-' 引数:
-'   ByRef arr(  … 用途を指定します。
-
-Public Function IsAllocated_Long(ByRef arr() As Long) As Boolean
-    On Error GoTo EH
-    Dim lb As Long
-    lb = LBound(arr, 1)
-    IsAllocated_Long = True
     Exit Function
 EH:
-    IsAllocated_Long = False
+    IsArrayInitialized = False
 End Function
