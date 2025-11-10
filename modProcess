@@ -1,265 +1,331 @@
 Option Explicit
 '============================================================
 ' modProcess
-' 概要: Import/Process のワークフローと Master 貼付（JoinKeyのImport適用を含む）
+' 概要: パイプラインの切替、Import/Processのワークフロー、Masterテーブルへの貼り付け、エンコード選択等
 '============================================================
 
-'=== グローバル状態（既存） ===
-Public CurrentMappingTableName As String
-Public CurrentMasterTableName As String
-Public CurrentExportBaseName As String
-Public AllowOneToMany As Boolean
-Public CurrentEncodingMode As String
-Public HasRaw As Boolean, IsProcessed As Boolean
-Public m_baseTblName As String
-Public RawJoined As Variant
-Public m_baseRowIdx() As Long
-Public IgnoreModeOnImport As Boolean
 
-'=== 外部参照（既存モジュールの公開関数想定） ===
-Declare PtrSafe Sub WriteLog Lib "kernel32" Alias "OutputDebugStringA" (ByVal lpOutputString As String)
-' ↑ 上のDeclareはお使いのプロジェクトの実装に合わせて適宜置換してください（ここではデバッグ用途）
+'=== 既定行数にマスターの表サイズを戻す（B4セル：行数設定 / 空なら20000） ===
+' 概要: Master_* テーブルのサイズを初期化（必要行/列の確保・不要領域の削除）
+' 備考: Process 前に安全なサイズへ調整
+
+Private Sub ResetMasterSize(masterLo As ListObject)
+    On Error Resume Next
+    If masterLo Is Nothing Then Exit Sub
+    Dim ws As Worksheet: Set ws = masterLo.Parent
+    Dim reserve As Long
+    reserve = CLng(Val(ws.Range("B4").Value)) ' 任意セルに既定行数を置く運用。空なら下で既定値に
+    If reserve <= 0 Then reserve = 20000
+
+    Dim cols As Long: cols = masterLo.ListColumns.Count
+    Dim newRg As Range
+    Set newRg = masterLo.HeaderRowRange.Resize(reserve + 1, cols)
+    masterLo.Resize newRg
+    If Not masterLo.DataBodyRange Is Nothing Then masterLo.DataBodyRange.ClearContents
+    On Error GoTo 0
+End Sub
+
+
+'=== 高速クリア：テーブルのデータ部を空に（列構成は維持） ===
+' 概要: 指定 ListObject のデータ行を高速でクリアします（ヘッダ保持）
+' 引数:
+'   lo As ListObject  … クリア対象のテーブル
+
+Private Sub FastClearTable(lo As ListObject)
+    If lo Is Nothing Then Exit Sub
+    If lo.DataBodyRange Is Nothing Then
+        ' 既に0行
+        Exit Sub
+    End If
+    ' 行がある場合は全部削除（列は温存）
+    lo.DataBodyRange.Delete xlShiftUp
+End Sub
+
 
 '==============================
-' パイプライン切替
+' パイプライン切替（Main / List）
 '==============================
+' 概要: Main パイプライン用のマッピング/マスター/エクスポート設定
+' 備考: Mapping/Main を使用（1対多は禁止）
+' 備考: ログに 'Switched pipeline: Main' を出力
+
 Public Sub UsePipelineMain()
     CurrentMappingTableName = "Mapping_Main"
     CurrentMasterTableName = "Master_Main"
     CurrentExportBaseName = "main"
     AllowOneToMany = False
+    WriteLog "INFO", "Switched pipeline: Main"
 End Sub
+' 概要: List パイプライン用のマッピング/マスター/エクスポート設定を適用
+' 備考: Mapping/List を使用（1対多を許可）
+' 備考: ログに 'Switched pipeline: List' を出力
 
 Public Sub UsePipelineList()
     CurrentMappingTableName = "Mapping_List"
     CurrentMasterTableName = "Master_List"
     CurrentExportBaseName = "list"
     AllowOneToMany = True
+    WriteLog "INFO", "Switched pipeline: List"
 End Sub
 
 '==============================
-' Import：CSV→JOIN（無加工）→JoinKey適用→Master
+' エンコード選択
 '==============================
-Public Sub ImportFiles(pipeLine As String)
-    On Error GoTo EH
 
+Public Sub ChooseEncoding()
+    Dim s As String
+    s = InputBox( _
+        "読み込み・書き出しのエンコードを指定してください。" & vbCrLf & _
+        "AUTO / UTF-8 / Shift_JIS / UTF-16LE", _
+        "Encoding Mode", IIf(Len(CurrentEncodingMode) = 0, "AUTO", CurrentEncodingMode))
+    If s = "False" Then Exit Sub
+    s = UCase$(Trim$(s))
+    Select Case s
+        Case "AUTO", "UTF-8", "UTF8": CurrentEncodingMode = IIf(s = "UTF8", "UTF-8", s)
+        Case "SHIFT_JIS", "SJIS", "CP932": CurrentEncodingMode = "SHIFT_JIS"
+        Case "UTF-16LE", "UTF16LE", "UNICODE": CurrentEncodingMode = "UTF-16LE"
+        Case Else: CurrentEncodingMode = "AUTO"
+    End Select
+    EnsureFolder ThisWorkbook.Path & "\" & LOG_FOLDER & "\"
+    WriteLog "INFO", "Encoding set: " & CurrentEncodingMode
+    MsgBox "Encoding Mode: " & CurrentEncodingMode, vbInformation
+End Sub
+
+'==============================
+' Import：CSV読込→キー索引→JOIN（無加工）→Master貼付
+'==============================
+
+Public Sub ImportFiles(pipeLine)
+    '例外発生時EHへジャンプし終了
+    On Error GoTo EH
+    '開始時刻の記録
+    Dim tStart As Date: tStart = Now
+    '読み込み時の文字コード設定
     If Len(CurrentEncodingMode) = 0 Then CurrentEncodingMode = "AUTO"
-    If pipeLine = "Main" Then
+    
+    '読み込みパイプラインの選択
+    If pipeLine = "Main" Then  ' Main読み込み時
         UsePipelineMain
-    ElseIf pipeLine = "List" Then
+    ElseIf pipeLine = "List" Then  ' List読み込み時
         UsePipelineList
     End If
-
+    
+    'Mappingシートの読み取り
     Dim ok As Boolean
+    'Mapping読み取り処理（modMappingHelper）
     ok = ReadMappingFromTableName(CurrentMappingTableName)
-    If Not ok Then Exit Sub
-
-    ' CSVロード（外部: LoadAllCsv を想定）
-    Dim importPath As String: importPath = ThisWorkbook.Path & "\" & "import" & "\"
-    EnsureFolder ThisWorkbook.Path & "\" & "log" & "\"
-    Set TableData = CreateObject("Scripting.Dictionary")
+    If Not ok Then
+        MsgBox "Mapping の読み取りに失敗しました。", vbCritical
+        Exit Sub
+    End If
+    
+    'インポート対象フォルダの絶対パスを作成
+    Dim importPath As String: importPath = ThisWorkbook.Path & "\" & IMPORT_FOLDER & "\"
+    EnsureFolder ThisWorkbook.Path & "\" & LOG_FOLDER & "\"
+    Set TableData = CreateObject("Scripting.Dictionary")  ' CSV読み込み後の全テーブルデータを保持する Dictionary を初期化
     If Not LoadAllCsv(importPath, Map_TblNames, TableData) Then Exit Sub
-
-    ' 任意のフィルタ
+    
+    'マッピング／設定に基づくフィルターが存在すれば適用（存在しない場合は無処理）
     ApplyFiltersIfExist
-
-    ' キー索引
+    
+    'JOINに必要なキーのインデックスを構築
     BuildKeyIndexes
-    m_baseTblName = PickBaseTableName(Map_TblNames, Map_SrcCols, Map_IsKey)
-    If Len(m_baseTblName) = 0 And (Not Not Map_TblNames) <> 0 Then m_baseTblName = Map_TblNames(LBound(Map_TblNames))
-
-    ' 無加工JOIN
+    m_baseTblName = PickBaseTableName(Map_TblNames, Map_SrcCols, Map_IsKey)  ' JOINのベースとなるテーブル名を選定
+    If Len(m_baseTblName) = 0 And (Not Not Map_TblNames) <> 0 Then m_baseTblName = Map_TblNames(0)  ' ベーステーブル名が決まらない場合フォールバック
+     
+    '無加工JOIN
     IgnoreModeOnImport = True
     RawJoined = BuildJoinedRaw(m_baseTblName)
     IgnoreModeOnImport = False
-
-    ' ★ Import時に JoinKey を適用して列ごとに LEFT JOIN 値で上書き
-    ApplyJoinKeysOnImport RawJoined, m_baseTblName
-
-    HasRaw = True: IsProcessed = False
-
-    ' Masterへ貼付
+    
+    HasRaw = True: IsProcessed = False  ' 内部状態フラグの更新
+    
+    '貼り付け先Masterテーブルを取得
     Dim masterLo As ListObject
     Set masterLo = GetListObjectByName(CurrentMasterTableName)
     If masterLo Is Nothing Then
         MsgBox "Masterテーブルが見つかりません: " & CurrentMasterTableName, vbCritical
         Exit Sub
     End If
+    
+    '無加工JOIN結果をMasterテーブルへ貼り付け
     PasteToMasterByTable masterLo, RawJoined
-    MsgBox "ファイルインポート完了（JoinKey反映済み）", vbInformation
+    
+    '完了通知
+    MsgBox "ファイルインポート完了（無加工をMasterへ反映）", vbInformation
     Exit Sub
 EH:
-    MsgBox "ImportFiles エラー: " & Err.Description, vbCritical
+    MsgBox "ImportFilesでエラー: " & Err.Description, vbCritical
 End Sub
 
+
 '==============================
-' Process：加工 → Master
+' Process：加工適用 → Masterへ
 '==============================
-Public Sub ProcessData(pipeLine As String)
+
+Public Sub ProcessData(pipeLine)
+    '例外発生時EHへジャンプし終了
     On Error GoTo EH
+    '開始時刻の記録
+    Dim tStart As Date: tStart = Now
+    
+    'インポート処理未実施の場合はエラー終了
     If Not HasRaw Then
         MsgBox "先に『ファイルインポート』を実行してください。", vbExclamation
         Exit Sub
     End If
+    
+    '読み込み時の文字コード設定
     If Len(CurrentEncodingMode) = 0 Then CurrentEncodingMode = "AUTO"
+    
+    '読み込みパイプラインの選択
     If pipeLine = "Main" Then
         UsePipelineMain
     ElseIf pipeLine = "List" Then
         UsePipelineList
     End If
-
+    
+    'Mappingシートの読み取り
     Dim ok As Boolean
     ok = ReadMappingFromTableName(CurrentMappingTableName)
-    If Not ok Then Exit Sub
-
+    If Not ok Then
+        WriteLog "ERROR", "Mapping read failed in ProcessData"
+        MsgBox "Mapping の読み取りに失敗しました。", vbCritical
+        Exit Sub
+    End If
+    
+    ' 無加工データ(RawJoined)に対してスマート変換を適用
+    ' - 例: 型変換、正規化、列追加・再計算、条件フィルタ、列順序変更など
+    ' - 戻り値は「加工済み配列」
     Dim procArr As Variant
     procArr = ApplyTransformSmart(RawJoined)
-
+    
+    ' 出力先Masterのテーブルを取得
     Dim masterLo As ListObject
     Set masterLo = GetListObjectByName(CurrentMasterTableName)
     If masterLo Is Nothing Then
         MsgBox "Masterテーブルが見つかりません: " & CurrentMasterTableName, vbCritical
         Exit Sub
     End If
-
+    
+    ' 加工済み配列をMasterへ貼り付け
     PasteToMasterByTable masterLo, procArr
-    IsProcessed = True
-    MsgBox "データ加工完了", vbInformation
+    IsProcessed = True  ' 加工完了フラグ
+    
+    ' ログ出力(行数/列数/経過時間)
+    ' - UBound(procArr, 1): 行数上限インデックス
+    ' - UBound(procArr, 2): 列数上限インデックス
+    ' - Now - tStart      : 経過時間(TimeSpan)
+    WriteLog "INFO", "ProcessData: done / rows=" & UBound(procArr, 1) & " / cols=" & UBound(procArr, 2) & " / elapsed=" & Format(Now - tStart, "hh:nn:ss")
+    
+    ' 完了通知
+    MsgBox "データ加工完了（Masterへ反映）", vbInformation
     Exit Sub
 EH:
-    MsgBox "ProcessData エラー: " & Err.Description, vbCritical
+    WriteLog "ERROR", "ProcessData error: " & Err.Number & " " & Err.Description
+    MsgBox "ProcessDataでエラー: " & Err.Description, vbCritical
 End Sub
 
+
 '==============================
-' JoinKey適用（Import直後のRawJoinedに上書き）
+' Clear：Masterクリア＆中間データ破棄
 '==============================
-Private Sub ApplyJoinKeysOnImport(ByRef Raw As Variant, ByVal baseTableName As String)
-    On Error GoTo EH
-    If (Not Not Map_JoinSpec) = 0 Then Exit Sub
-    If TableData Is Nothing Then Exit Sub
-    If Not TableData.Exists(baseTableName) Then Exit Sub
 
-    Dim baseArr As Variant: baseArr = TableData(baseTableName)
-    Dim baseHdrIx As Object: Set baseHdrIx = CreateObject("Scripting.Dictionary")
-    Dim j As Long
-    For j = 1 To UBound(baseArr, 2)
-        baseHdrIx(CStr(baseArr(1, j))) = j
-    Next
+Public Sub ClearData()
+    Dim prevCalc As XlCalculation
+    Dim prevEvt As Boolean, prevUpd As Boolean
+    prevCalc = Application.Calculation
+    prevEvt = Application.EnableEvents
+    prevUpd = Application.ScreenUpdating
+    Application.Calculation = xlCalculationManual
+    Application.EnableEvents = False
+    Application.ScreenUpdating = False
 
-    Dim outHdrIx As Object: Set outHdrIx = CreateObject("Scripting.Dictionary")
-    For j = 1 To UBound(Raw, 2)
-        outHdrIx(CStr(Raw(1, j))) = j
-    Next
+    On Error GoTo FIN
 
-    Dim r As Long
-    For r = LBound(Map_JoinSpec) To UBound(Map_JoinSpec)
-        Dim spec As String: spec = Map_JoinSpec(r)
-        If Len(spec) = 0 Then GoTo CONT_R
+    Dim lo As ListObject
 
-        Dim refTbl As String: refTbl = ResolveReferencedTableName_ByRow(r)
-        Dim refValCol As String: refValCol = ResolveReferencedValueColumn_ByRow(r)
-        If Len(refTbl) = 0 Or Len(refValCol) = 0 Then GoTo CONT_R
-        If Not TableData.Exists(refTbl) Then GoTo CONT_R
+    Set lo = GetListObjectByName("Master_Main")
+    If Not lo Is Nothing Then FastClearTable lo
 
-        Dim js As TJoinSpec: js = ParseJoinSpec(spec)
-        If Len(js.tableName) = 0 Then GoTo CONT_R
-        If StrComp(js.tableName, refTbl, vbTextCompare) <> 0 Then GoTo CONT_R
+    Set lo = GetListObjectByName("Master_List")
+    If Not lo Is Nothing Then FastClearTable lo
 
-        Dim idx As Object: Set idx = GetOrBuildJoinIndex(js.tableName, js.refKeyCols)
-        If idx Is Nothing Then GoTo CONT_R
+    ' 中間データのクリア
+    On Error Resume Next
+    Set TableData = Nothing
+    Set KeyIndexSingle = Nothing
+    Set KeyIndexMulti = Nothing
+    Erase Map_OutCols: Erase Map_DataType
+    Erase Map_IsKey: Erase Map_Mode: Erase Map_Def
+    Erase Map_IsKey: Erase Map_TblNames
+    Erase Map_SrcCols
+    On Error GoTo 0
 
-        Dim outColName As String: outColName = Map_OutCols(r)
-        If Not outHdrIx.Exists(outColName) Then GoTo CONT_R
-        Dim outIx As Long: outIx = CLng(outHdrIx(outColName))
+    WriteLog "INFO", "ClearData: done (fast)"
+    MsgBox "データクリアを実行しました。"
 
-        Dim i As Long, comp As String, k As Long, ok As Boolean, refRow As Long
-        For i = 2 To UBound(baseArr, 1)
-            comp = "": ok = True
-            For k = LBound(js.baseCols) To UBound(js.baseCols)
-                If Not baseHdrIx.Exists(CStr(js.baseCols(k))) Then ok = False: Exit For
-                If Len(comp) > 0 Then comp = comp & "|"
-                comp = comp & CStr(baseArr(i, CLng(baseHdrIx(CStr(js.baseCols(k))))))
-            Next
-            If Not ok Then GoTo NEXT_I
-            If idx.Exists(comp) Then
-                refRow = CLng(idx(comp))
-                Raw(i, outIx) = GetCellByHeader(TableData(js.tableName), refRow, refValCol)
-            End If
-NEXT_I:
-        Next
-CONT_R:
-    Next
-    Exit Sub
-EH:
-    ' ログ等あればここで
+FIN:
+    Application.Calculation = prevCalc
+    Application.EnableEvents = prevEvt
+    Application.ScreenUpdating = prevUpd
 End Sub
 
-'=== 参照テーブル名（この出力行で最初に指定されている非ベースのテーブル） ===
-Private Function ResolveReferencedTableName_ByRow(ByVal outRowIdx As Long) As String
-    Dim c As Long
-    For c = LBound(Map_TblNames) To UBound(Map_TblNames)
-        If Map_TblNames(c) <> "" Then
-            ' ベースと同じ名前でも、JoinKey側の tableName と一致判定するのでここでは最初のテーブル名を返す
-            ResolveReferencedTableName_ByRow = Map_TblNames(c)
-            Exit Function
-        End If
-    Next
-End Function
-
-'=== 参照の「取得したい列名」（例: new_id） ===
-Private Function ResolveReferencedValueColumn_ByRow(ByVal outRowIdx As Long) As String
-    Dim c As Long, v As String
-    For c = LBound(Map_TblNames) To UBound(Map_TblNames)
-        v = Trim$(CStr(Map_SrcCols(outRowIdx, c)))
-        If Len(v) > 0 Then
-            ResolveReferencedValueColumn_ByRow = v
-            Exit Function
-        End If
-    Next
-End Function
-
-'=== ヘッダ名で値を取得 ===
-Private Function GetCellByHeader(ByRef arr As Variant, ByVal r As Long, ByVal colName As String) As String
-    Dim j As Long
-    For j = 1 To UBound(arr, 2)
-        If CStr(arr(1, j)) = colName Then
-            GetCellByHeader = CStr(arr(r, j))
-            Exit Function
-        End If
-    Next
-End Function
 
 '==============================
-' 既存の他ユーティリティ（抜粋プレースホルダ）
+' Masterへ貼付（行数だけ合わせて一括代入）
 '==============================
-Public Function GetListObjectByName(nameOrRange As String) As ListObject
-    Dim ws As Worksheet, lo As ListObject
-    For Each ws In ThisWorkbook.Worksheets
-        For Each lo In ws.ListObjects
-            If StrComp(lo.Name, nameOrRange, vbTextCompare) = 0 Then
-                Set GetListObjectByName = lo: Exit Function
-            End If
-        Next
-    Next
-    Set GetListObjectByName = Nothing
-End Function
+' 概要: テーブル名→対象 Master_* へ配列を貼り付け
+' 引数:
+'   tblName As String  … 貼付対象テーブル名
+'   arr As Variant  … 貼付する2次元配列（ヘッダ付）
 
-Public Sub PasteToMasterByTable(masterLo As ListObject, dataArr As Variant)
+Public Sub PasteToMasterByTable(masterTbl As ListObject, dataArr As Variant)
     Dim rows As Long, cols As Long
     rows = UBound(dataArr, 1): cols = UBound(dataArr, 2)
+    If masterTbl.ListColumns.Count <> cols Then
+        WriteLog "ERROR", "Master columns mismatch. Master=" & masterTbl.ListColumns.Count & " Mapping=" & cols
+        MsgBox "Masterテーブルの列数がMappingの出力列数と一致しません。", vbCritical
+        Exit Sub
+    End If
     Dim newRange As Range
-    Set newRange = masterLo.HeaderRowRange.Resize(rows + 1, cols)
-    masterLo.Resize newRange
-    masterLo.DataBodyRange.Value = dataArr
+    Set newRange = masterTbl.HeaderRowRange.Resize(rows + 1, cols)
+    masterTbl.Resize newRange
+    masterTbl.DataBodyRange.Value = dataArr
 End Sub
 
-'=== ここで参照する外部関数の宣言（プロジェクト既存実装に合わせてください） ===
-Public Function LoadAllCsv(ByVal importPath As String, ByRef tblNames() As String, ByRef outDict As Object) As Boolean: End Function
-Public Sub ApplyFiltersIfExist(): End Sub
-Public Sub BuildKeyIndexes(): End Sub
-Public Function PickBaseTableName(ByRef tblNames() As String, ByRef srcCols() As String, ByRef isKey() As Boolean) As String: End Function
-Public Function BuildJoinedRaw(baseTbl As String) As Variant: End Function
-Public Function ApplyTransformSmart(arr As Variant) As Variant: End Function
-Public Sub EnsureFolder(ByVal path As String): End Sub
 
-'=== ここまで: modProcess ===
+'=== Runner: Import (PerfGuardから呼ばれる) ===
+' 概要: CSV 入力→前処理→マスター準備まで実行
+' 引数:
+'   pipeLine As String  … パイプライン名（"Main"|"List"）
+' 備考: ImportFiles を呼び出し、EndProgress で終了
+
+Public Sub Run_Import(ByVal pipeLine As String)
+    On Error GoTo EH
+    Pulse "インポート準備中"
+    ImportFiles pipeLine
+    EndProgress "インポート完了"
+    Exit Sub
+EH:
+    EndProgress "インポート中断"
+    Err.Raise Err.Number, Err.Source, Err.Description
+End Sub
+
+
+'=== Runner: Process (PerfGuardから呼ばれる) ===
+' 概要: （Import 済みデータに対して）マッピング→JOIN/CONCAT→型変換→フィルタ適用→Master_* へ貼付、までの本処理を実行
+' 引数:
+'   pipeLine As String  … パイプライン名（"Main"|"List"）
+' 備考: 途中で進捗更新（Pulse）、最終的にEndProgress
+
+Public Sub Run_Process(ByVal pipeLine As String)
+    On Error GoTo EH
+    Pulse "加工準備中"
+    ProcessData pipeLine
+    EndProgress "加工完了"
+    Exit Sub
+EH:
+    EndProgress "加工中断"
+    Err.Raise Err.Number, Err.Source, Err.Description
+End Sub
