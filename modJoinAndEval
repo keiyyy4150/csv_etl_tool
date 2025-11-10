@@ -1,4 +1,89 @@
 Option Explicit
+
+'=== JoinKey cache ===========================================
+' Dict: outColIndex (Long) -> Dict(tableName (String) -> rightToken (String "{T.C}"))
+Private m_joinKeyCache As Object
+
+Public Sub ResetJoinKeyCache()
+    Set m_joinKeyCache = Nothing
+End Sub
+
+Private Function EnsureJoinKeyCache() As Object
+    If m_joinKeyCache Is Nothing Then Set m_joinKeyCache = CreateObject("Scripting.Dictionary")
+    Set EnsureJoinKeyCache = m_joinKeyCache
+End Function
+
+' specStr examples:
+'   "UserAccountMap.old_id=pcm_t_キャンペーン.作成者CD"
+'   "A.k=B.c | C.k=T0.c"
+'   "T1:k=T0:c"  ' colon style supported
+Private Function ParseJoinKeySpec(specStr As String) As Object
+    Dim d As Object: Set d = CreateObject("Scripting.Dictionary")
+    Dim raw As String, arr, one As String
+    raw = Trim$(CStr(specStr))
+    If Len(raw) = 0 Then Set ParseJoinKeySpec = d: Exit Function
+
+    ' normalize newlines & separators
+    raw = Replace(raw, vbCrLf, vbLf)
+    raw = Replace(raw, vbCr, vbLf)
+    raw = Replace(raw, "|", vbLf)
+    arr = Split(raw, vbLf)
+
+    Dim i As Long
+    For i = LBound(arr) To UBound(arr)
+        one = Trim$(CStr(arr(i)))
+        If Len(one) = 0 Then GoTo CONT
+
+        Dim p As Long: p = InStr(one, "=")
+        If p = 0 Then GoTo CONT
+
+        Dim leftPart As String, rightPart As String
+        leftPart = Trim$(Left$(one, p - 1))
+        rightPart = Trim$(Mid$(one, p + 1))
+
+        Dim lp As Long: lp = InStr(leftPart, ".")
+        If lp = 0 Then lp = InStr(leftPart, ":")
+        If lp = 0 Then GoTo CONT
+
+        Dim leftTbl As String, leftCol As String
+        leftTbl = Trim$(Left$(leftPart, lp - 1))
+        leftCol = Trim$(Mid$(leftPart, lp + 1))
+        ' leftCol is not currently used; table-level override
+
+        ' normalize rightPart to "{T.C}"
+        rightPart = Replace(rightPart, ":", ".")
+        rightPart = Replace(rightPart, "{", "")
+        rightPart = Replace(rightPart, "}", "")
+        rightPart = "{" & Trim$(rightPart) & "}"
+
+        If Len(leftTbl) > 0 Then
+            If Not d.Exists(leftTbl) Then d.Add leftTbl, rightPart
+        End If
+CONT:
+    Next
+    Set ParseJoinKeySpec = d
+End Function
+
+Private Function GetRightTokenForTable(outColIndex As Long, targetTable As String) As String
+    Dim cache As Object: Set cache = EnsureJoinKeyCache()
+    Dim perCol As Object
+    If Not cache.Exists(outColIndex) Then
+        Dim spec As String: spec = ""
+        On Error Resume Next
+        spec = Map_JoinKey(outColIndex)
+        On Error GoTo 0
+        Set perCol = ParseJoinKeySpec(spec)
+        cache.Add outColIndex, perCol
+    Else
+        Set perCol = cache(outColIndex)
+    End If
+    If perCol Is Nothing Then Exit Function
+    If perCol.Exists(targetTable) Then
+        GetRightTokenForTable = CStr(perCol(targetTable))
+    Else
+        GetRightTokenForTable = ""
+    End If
+End Function
 '============================================================
 ' modJoinAndEval
 ' 概要: マッピングに基づくJOIN処理、値の正規化、式の評価（IF、SUM、Evaluate 等）を担う中核ロジック。
@@ -504,14 +589,15 @@ End Function
 '   Optional outColIndex As Long = -1  …
 
 Public Function ResolveTokenProcessed(token As String, baseTbl As String, baseRow As Long, myKey As String, _
-                                      Optional outColIndex As Long = -1) As String
-    Dim raw As Variant
-    raw = ResolveTokenRaw(token, baseTbl, baseRow, myKey)
+    Dim raw As Variant, dtype As String
+    raw = ResolveTokenRawWithIndexEx(token, baseTbl, baseRow, myKey, 1, outColIndex)
     If outColIndex <= 0 Then
         ResolveTokenProcessed = CStr(raw)
     Else
-        ' 置換ロジックは廃止。ここでは型変換のみ実施。
-        ResolveTokenProcessed = ApplyOneValueTransform(raw, Map_DataType(outColIndex))
+        On Error Resume Next
+        dtype = Map_DataType(outColIndex)
+        On Error GoTo 0
+        ResolveTokenProcessed = ApplyOneValueTransform(raw, dtype)
     End If
 End Function
 
@@ -1292,3 +1378,53 @@ CONT_T:
     BuildRawValueIgnoringMode = acc
 End Function
 
+Private Function ResolveTokenRawWithIndexEx(token As String, baseTbl As String, baseRow As Long, _
+                                            myKey As String, matchIndex As Long, outColIndex As Long) As String
+    Dim t As String, c As String, p As Long, tok As String
+    tok = Replace(Replace(CStr(token), "{", ""), "}", "")
+    p = InStr(tok, ".")
+    If p = 0 Then Exit Function
+
+    t = Left$(tok, p - 1)
+    c = Mid$(tok, p + 1)
+
+    If t = baseTbl Then
+        Dim arr As Variant, ci As Long
+        arr = TableData(t)
+        If IsNumeric(c) Then
+            ci = CLng(c)
+        Else
+            ci = FindColumnIndex(arr, c)
+        End If
+        If ci > 0 Then
+            On Error Resume Next
+            ResolveTokenRawWithIndexEx = CStr(arr(baseRow, ci))
+            On Error GoTo 0
+        End If
+    Else
+        Dim overrideKeyTok As String
+        overrideKeyTok = GetRightTokenForTable(outColIndex, t)
+        If Len(overrideKeyTok) > 0 Then
+            Dim keyStr As String
+            keyStr = ResolveTokenRawWithIndexEx(overrideKeyTok, baseTbl, baseRow, myKey, 1, outColIndex)
+            ResolveTokenRawWithIndexEx = GetValueFromTableMulti(t, c, keyStr, matchIndex)
+        Else
+            ResolveTokenRawWithIndexEx = GetValueFromTableMulti(t, c, myKey, matchIndex)
+        End If
+    End If
+End Function
+
+Public Function BuildConcatRawValueEx(def As String, baseTbl As String, baseRow As Long, myKey As String, _
+                                      Optional matchIndex As Long = 1, Optional outColIndex As Long = -1) As String
+    Dim parts As Collection: Set parts = SplitDefToParts(def)
+    Dim i As Long, v As String, acc As String
+    For i = 1 To parts.Count
+        v = ResolveTokenRawWithIndexEx(parts(i), baseTbl, baseRow, myKey, matchIndex, outColIndex)
+        If acc = "" Then
+            acc = v
+        Else
+            If Len(v) > 0 Then acc = acc & vbLf & v
+        End If
+    Next
+    BuildConcatRawValueEx = acc
+End Function
