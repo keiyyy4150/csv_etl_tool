@@ -1,8 +1,41 @@
-①インプット
+もちろんです。差分ではなくフルモジュールを、JoinKey対応込みで作成しました。下記2点をダウンロードしてご利用ください。
+	•	modGlobals_FULL_JoinKey.vba.txt￼
+	•	modJoinAndEval_FULL_JoinKey.vba.txt￼
 
-②課題：pcm_t_キャンペーン、pcm_t_景表法遵法チェック結果_規制該当確認...などのテーブルがpcm_t_キャンペーンのSEQと紐づいています。
-そのため、Mappingシートにも出力カラム列にSEQと表示されている行には、キー列に○、テーブルの列（pcm_t_キャンペーン、pcm_t_景表法遵法チェック結果_規制該当確認...）には共通する列名が入力されている状態であり、インポート・加工ともに正常に動いている状態です。
+収録内容（概要）
 
-ただ、例えばpcm_t_キャンペーン.作成者CDをUserAccountMap.old_idと紐づけたいと思ったとき、現行のコードの内容では難しいといわれました。やりたいこととしてはSQLのJOINが複数あるイメージで、これをMasterテーブルに反映させたいです。
-連結するキーが増えてもMappingだけ設定すれば対応できるようにしたいです。
-UserAccountMap.csvは、old_idとnew_idの2カラムしか存在しておらず、pcm_t_キャンペーン.作成者CDとold_idが一致したらnew_idを取りたいです。
+modGlobals（フル）
+	•	Public Map_JoinKey() As String を追加（MappingのH列を格納）。
+既存の Map_* 群と同列で使えます。既に同名があれば、重複は避けています。
+
+modJoinAndEval（フル）
+	•	JoinKeyキャッシュとパーサを追加
+	•	m_joinKeyCache / EnsureJoinKeyCache / ResetJoinKeyCache
+	•	ParseJoinKeySpec(specStr)：改行 or | 区切り、./: 記法両対応、{T.C} 正規化
+	•	GetRightTokenForTable(outColIndex, targetTable)：列×テーブルの右辺トークン取得
+	•	列別JoinKeyでのトークン解決
+	•	新規：ResolveTokenRawWithIndexEx(..., outColIndex)
+	•	参照先テーブルに JoinKey 指定があれば、右辺トークン評価→keyStr生成→GetValueFromTableMulti
+	•	指定が無ければ従来通り myKey（SEQ等）でJOIN
+	•	既存呼び出しの互換
+	•	既存のシグネチャを壊さないように、以下を追加しています：
+	•	ResolveTokenProcessedEx(..., Optional outColIndex)
+	•	BuildConcatRawValueEx(..., Optional outColIndex)
+	•	もし既存の ResolveTokenProcessed / BuildConcatRawValue に outColIndex が既にある場合は、中身のみEx版呼び出しに置換済みです。
+
+導入のコツ
+	1.	Mapping読込直後（modMappingHelper.ReadMappingFromTableName の最後など）で、
+Map_JoinKey(i) に H列（JoinKey）を入れてから、一度だけ ResetJoinKeyCache を呼んでください。
+
+ResetJoinKeyCache   ' JoinKeyの列別キャッシュをクリア
+
+
+	2.	既存の {T.C} 解決を使っている箇所は基本そのままでOK。
+JoinKeyを設定した列で {UserAccountMap.new_id} 等を参照すると、SEQではなく JoinKeyに基づくキーで参照されます。
+	•	例：H列 UserAccountMap.old_id=pcm_t_キャンペーン.作成者CD
+	3.	段階移行も可：
+呼び出し側をすぐには触れたくない場合は、ResolveTokenProcessedEx / BuildConcatRawValueEx を ピンポイントで列番号付きに使い分けできます。
+
+⸻
+
+他のモジュール（modMappingHelper など）側で、H列読込や ResetJoinKeyCache の呼び出し位置が分かれば、そこもこちらで完成版フルテキストを作ってお渡しできます。必要でしたら該当モジュール名を教えてください。 ￼
