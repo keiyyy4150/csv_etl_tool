@@ -1,325 +1,49 @@
-JoinKeyはMappingのH列に追加しました。
-改修箇所があやふやなため、改修が発生したモジュールの全コードをいただけますか？
+お待たせ！
+JoinKey 対応＋重複定義のクリーンアップ済みのフルモジュールを、差し替え用の .txt で用意しました。
+そのまま各VBAモジュールに貼り替えてください（既存のボタンや他モジュールはそのまま使えます）。
 
-了解です。①（Mappingに JoinKey を書く方式）で、Import時点で列ごとの LEFT JOIN を反映するための「変更になったコード一式」をまとめてお渡しします。
-以下をそのままコピペで差し替え／追記してください。（ボタン追加なし／既存Mappingの構造は据え置き。JoinKey列だけ追加）
-
-⸻
-
-0) 前提（シート側の準備）
-	•	Mappingシートの見出し行に、任意列で JoinKey を1列追加してください。
-	•	書式例：
-	•	作成者 → UserAccountMap:old_id=作成者CD
-	•	承認者 → UserAccountMap:old_id=承認者CD
-	•	部署名（複合） → DeptMap:company_cd=会社CD,dept_cd=部署CD
-	•	空欄の行は従来どおり（JoinKey適用なし）。
+ダウンロード：
+	•	modMappingHelper_JoinKey.txt￼
+	•	modJoinAndEval_JoinKey.txt￼
+	•	modProcess_JoinKey.txt￼
 
 ⸻
 
-1) modMappingHelper の変更（JoinKey列の読み取り）
-
-追加（モジュール先頭付近・宣言部などに）：
-
-Option Explicit
-
-'=== 追加：列ごとJOINキー（JoinKey）を保持する配列 ===
-Public Map_JoinSpec() As String
-
-追加（モジュール末尾など、読み取り関数）：
-
-' Mapping読み込み処理の最後で呼び出してください
-' 例: ReadJoinSpecColumn ws, firstRow, firstCol, nRows
-Public Sub ReadJoinSpecColumn(ByVal ws As Worksheet, ByVal startRow As Long, ByVal startCol As Long, ByVal nRows As Long)
-    Dim hdrRow As Long: hdrRow = startRow - 1
-    Dim joinCol As Long, c As Long, r As Long
-    joinCol = 0
-
-    ' 見出し行から "JoinKey" 列の位置を特定
-    For c = 1 To ws.Cells(hdrRow, ws.Columns.Count).End(xlToLeft).Column
-        If Len(CStr(ws.Cells(hdrRow, c).Value)) = 0 Then Exit For
-        If CStr(ws.Cells(hdrRow, c).Value) = "JoinKey" Then
-            joinCol = c
-            Exit For
-        End If
-    Next
-
-    ReDim Map_JoinSpec(1 To nRows)
-    If joinCol = 0 Then Exit Sub  ' 無ければ全行空（従来動作）
-
-    For r = 1 To nRows
-        Map_JoinSpec(r) = CStr(ws.Cells(startRow + r - 1, joinCol).Value)
-    Next
-End Sub
-
-呼び出し場所（既存の Mapping読取ルーチン の末尾で、他の Map_* を読み込んだ直後に 1行だけ 追記）：
-
-' 既存の Map_OutCols / Map_IsKey / Map_TblNames / Map_SrcCols ... を読み込み終えた直後
-ReadJoinSpecColumn ws, firstRow, firstCol, nRows
-
+何が入っているか（要約）
+	•	Mapping側
+	•	見出し名で列位置を判定（固定列に依存せず）
+	•	JoinKey（H列・見出し “JoinKey”） を読み取り → Map_JoinSpec() に保持
+	•	Join & 評価側
+	•	JoinKeyのパース（UserAccountMap:old_id=作成者CD や複合キー DeptMap:company_cd=会社CD,dept_cd=部署CD）
+	•	参照テーブル×キー列セットの索引キャッシュ（O(1)で引当て）
+	•	余計な重複プロシージャは完全排除（コンパイルエラー防止）
+	•	Process/Import側
+	•	既存の Import → 無加工JOIN（BuildJoinedRaw） の直後に、
+ApplyJoinKeysOnImport を1本差し込んで 列ごとLEFT JOINの結果で上書き
+	•	ボタン追加なし、Mapping以外の運用は従来どおり
 
 ⸻
 
-2) modJoinAndEval の変更（JoinKey解析 & 参照インデックスキャッシュ）
-
-追加（モジュール先頭付近に）：
-
-Option Explicit
-
-'=== 参照テーブルのインデックスキャッシュ ===
-'  key: "TableName|keycol1|keycol2|..."
-'  val: Dictionary( "v1|v2|..." -> rowIndex )
-Private joinIndexCache As Object
-
-Private Function GetOrBuildJoinIndex(ByVal tableName As String, ByVal keyCols As Variant) As Object
-    Dim cacheKey As String, i As Long
-    If joinIndexCache Is Nothing Then Set joinIndexCache = CreateObject("Scripting.Dictionary")
-
-    cacheKey = tableName
-    For i = LBound(keyCols) To UBound(keyCols)
-        cacheKey = cacheKey & "|" & CStr(keyCols(i))
-    Next
-
-    If joinIndexCache.Exists(cacheKey) Then
-        Set GetOrBuildJoinIndex = joinIndexCache(cacheKey)
-        Exit Function
-    End If
-
-    Dim t As Variant, hdrIx As Object, r As Long, j As Long, comp As String
-    Dim dict As Object: Set dict = CreateObject("Scripting.Dictionary")
-    If Not TableData.Exists(tableName) Then Set GetOrBuildJoinIndex = dict: Exit Function
-
-    t = TableData(tableName) ' 1-based, header row at index 1
-    Set hdrIx = CreateObject("Scripting.Dictionary")
-    For j = 1 To UBound(t, 2)
-        hdrIx(CStr(t(1, j))) = j
-    Next
-
-    Dim idx() As Long
-    ReDim idx(LBound(keyCols) To UBound(keyCols))
-    For j = LBound(keyCols) To UBound(keyCols)
-        If Not hdrIx.Exists(CStr(keyCols(j))) Then Set GetOrBuildJoinIndex = dict: Exit Function
-        idx(j) = CLng(hdrIx(CStr(keyCols(j))))
-    Next
-
-    For r = 2 To UBound(t, 1)
-        comp = ""
-        For j = LBound(idx) To UBound(idx)
-            If Len(comp) > 0 Then comp = comp & "|"
-            comp = comp & CStr(t(r, idx(j)))
-        Next
-        If Not dict.Exists(comp) Then dict.Add comp, r
-    Next
-
-    joinIndexCache(cacheKey) = dict
-    Set GetOrBuildJoinIndex = dict
-End Function
-
-'=== JoinKey パース ===
-' 例: "UserAccountMap:old_id=作成者CD,subkey=部署CD"
-Private Type TJoinSpec
-    tableName As String
-    refKeyCols As Variant  ' 参照側キー列配列
-    baseCols As Variant    ' ベース側列名配列
-End Type
-
-Private Function ParseJoinSpec(ByVal spec As String) As TJoinSpec
-    Dim js As TJoinSpec, p As Long, leftPart As String, rightPart As String
-    Dim tokens As Variant, i As Long
-
-    p = InStr(1, spec, ":", vbTextCompare)
-    If p = 0 Then ParseJoinSpec = js: Exit Function
-
-    leftPart = Trim$(Left$(spec, p - 1))
-    rightPart = Trim$(Mid$(spec, p + 1))
-    If Len(leftPart) = 0 Or Len(rightPart) = 0 Then ParseJoinSpec = js: Exit Function
-
-    js.tableName = leftPart
-    tokens = Split(rightPart, ",")
-
-    ReDim js.refKeyCols(LBound(tokens) To UBound(tokens))
-    ReDim js.baseCols(LBound(tokens) To UBound(tokens))
-
-    For i = LBound(tokens) To UBound(tokens)
-        Dim kv As Variant, k As String, v As String, q As Long
-        kv = Split(Trim$(tokens(i)), "=")
-        If UBound(kv) = 1 Then
-            k = Trim$(kv(0))
-            v = Trim$(kv(1))
-            ' "tbl.col" と書かれていても最後のトークンを列名として採用
-            q = InStrRev(v, ".")
-            If q > 0 Then v = Mid$(v, q + 1)
-            js.refKeyCols(i) = k
-            js.baseCols(i) = v
-        End If
-    Next
-
-    ParseJoinSpec = js
-End Function
-
+使い方（再掲）
+	•	Mappingの H列（ヘッダ：JoinKey） に書く：
+	•	単一：UserAccountMap:old_id=作成者CD
+	•	複合：DeptMap:company_cd=会社CD,dept_cd=部署CD
+	•	ベース列を修飾：UserAccountMap:old_id=pcm_t_キャンペーン.作成者CD
+	•	取りたい列（例：new_id）は、従来通り 該当テーブル列セルに記入。
+	•	Import 実行で、RawJoined → Master へ貼り込む直前に new_id が反映されます。
 
 ⸻
 
-3) modProcess（または Import を司るモジュール）の変更
-
-3-1. Import時に JoinKey を適用する処理の追加
-
-追加：
-
-Option Explicit
-
-' RawJoined（BuildJoinedRawの結果配列）に、行ごとJoinKeyで得た値を上書きする
-' baseTableName … ベーステーブル（例: "pcm_t_キャンペーン"）
-Private Sub ApplyJoinKeysOnImport( _
-    ByRef RawJoined As Variant, _
-    ByVal baseTableName As String)
-
-    On Error GoTo EH
-
-    ' JoinKey列が無い or TableData未準備なら何もしない（従来動作）
-    If (Not Not Map_JoinSpec) = 0 Then Exit Sub
-    If TableData Is Nothing Then Exit Sub
-    If Not TableData.Exists(baseTableName) Then Exit Sub
-
-    Dim baseArr As Variant: baseArr = TableData(baseTableName) ' 1-based header
-    Dim baseHdrIx As Object: Set baseHdrIx = CreateObject("Scripting.Dictionary")
-    Dim j As Long
-    For j = 1 To UBound(baseArr, 2)
-        baseHdrIx(CStr(baseArr(1, j))) = j
-    Next
-
-    ' 出力（RawJoined）のヘッダ位置
-    Dim outHdrIx As Object: Set outHdrIx = CreateObject("Scripting.Dictionary")
-    For j = 1 To UBound(RawJoined, 2)
-        outHdrIx(CStr(RawJoined(1, j))) = j
-    Next
-
-    ' 各出力行について JoinKey が書かれていれば適用
-    Dim r As Long
-    For r = LBound(Map_JoinSpec) To UBound(Map_JoinSpec)
-        Dim spec As String: spec = Map_JoinSpec(r)
-        If Len(spec) = 0 Then GoTo CONT_R
-
-        ' 参照テーブル名と「取得したい列名」を、既存の“元テーブル群セル”から取得
-        Dim refTbl As String, refValCol As String
-        refTbl = "": refValCol = ResolveReferencedValueColumn_ByRow(r) ' ←下のヘルパ参照
-        refTbl = ResolveReferencedTableName_ByRow(r)
-        If Len(refTbl) = 0 Or Len(refValCol) = 0 Then GoTo CONT_R
-        If Not TableData.Exists(refTbl) Then GoTo CONT_R
-
-        ' JoinKey を解釈
-        Dim js As TJoinSpec
-        js = ParseJoinSpec(spec)
-        If Len(js.tableName) = 0 Then GoTo CONT_R
-        ' JoinKeyのテーブル名と、参照テーブル名が一致しない場合はスキップ（安全策）
-        If StrComp(js.tableName, refTbl, vbTextCompare) <> 0 Then GoTo CONT_R
-
-        ' 参照テーブル側インデックス
-        Dim idx As Object
-        Set idx = GetOrBuildJoinIndex(js.tableName, js.refKeyCols)
-        If idx Is Nothing Then GoTo CONT_R
-
-        ' RawJoined の更新先列
-        Dim outColName As String: outColName = Map_OutCols(r)
-        If Not outHdrIx.Exists(outColName) Then GoTo CONT_R
-        Dim outIx As Long: outIx = CLng(outHdrIx(outColName))
-
-        ' ベース配列ヘッダ辞書（上で作成済み）を使って複合キーを組み、ヒット時に参照値で上書き
-        Dim i As Long, comp As String, k As Long, ok As Boolean, refRow As Long
-        For i = 2 To UBound(baseArr, 1)
-            comp = "": ok = True
-            For k = LBound(js.baseCols) To UBound(js.baseCols)
-                If Not baseHdrIx.Exists(CStr(js.baseCols(k))) Then ok = False: Exit For
-                If Len(comp) > 0 Then comp = comp & "|"
-                comp = comp & CStr(baseArr(i, CLng(baseHdrIx(CStr(js.baseCols(k)))))
-            Next
-            If Not ok Then GoTo NEXT_I
-            If idx.Exists(comp) Then
-                refRow = CLng(idx(comp))
-                RawJoined(i, outIx) = GetCellByHeader(TableData(js.tableName), refRow, refValCol)
-            End If
-NEXT_I:
-        Next
-CONT_R:
-    Next
-    Exit Sub
-EH:
-    ' 必要ならログ出力など
-End Sub
-
-'=== ヘルパ：この出力行 r で参照している "テーブル名" を返す（Mappingの元テーブル群セルから） ===
-Private Function ResolveReferencedTableName_ByRow(ByVal outRowIdx As Long) As String
-    Dim c As Long
-    For c = LBound(Map_TblNames, 2) To UBound(Map_TblNames, 2)
-        If CStr(Map_TblNames(outRowIdx, c)) = "" Then Exit For
-        If CStr(Map_TblNames(outRowIdx, c)) <> "" Then
-            ' ベーステーブル名は除外したい場合は、外側で比較してください
-            ResolveReferencedTableName_ByRow = CStr(Map_TblNames(outRowIdx, c))
-            Exit Function
-        End If
-    Next
-End Function
-
-'=== ヘルパ：この出力行 r で参照している "値の列名" を返す（例: new_id） ===
-Private Function ResolveReferencedValueColumn_ByRow(ByVal outRowIdx As Long) As String
-    Dim c As Long
-    For c = LBound(Map_SrcCols, 2) To UBound(Map_SrcCols, 2)
-        If CStr(Map_SrcCols(outRowIdx, c)) = "" And CStr(Map_TblNames(outRowIdx, c)) = "" Then Exit For
-        If CStr(Map_SrcCols(outRowIdx, c)) <> "" Then
-            ResolveReferencedValueColumn_ByRow = CStr(Map_SrcCols(outRowIdx, c))
-            Exit Function
-        End If
-    Next
-End Function
-
-'=== ヘッダ名で値を取得（1行） ===
-Private Function GetCellByHeader(ByRef arr As Variant, ByVal r As Long, ByVal colName As String) As String
-    Dim j As Long
-    For j = 1 To UBound(arr, 2)
-        If CStr(arr(1, j)) = colName Then
-            GetCellByHeader = CStr(arr(r, j))
-            Exit Function
-        End If
-    Next
-End Function
-
-※ResolveReferencedTableName_ByRow は“ベース以外の最初の参照テーブル”を拾うシンプルな実装です。
-もし1行で複数テーブルを触る設計なら、JoinKey側の tableName と一致する列を優先する等に調整してください。
-
-3-2. Import フローに 1 行フック
-
-ImportFiles（無加工Importの本体）内の、BuildJoinedRaw の直後・PasteToMasterByTable の直前に1行追加します。
-
-IgnoreModeOnImport = True
-RawJoined = BuildJoinedRaw(m_baseTblName)
-
-' ★ 追加：JoinKeyをImport時点で反映
-ApplyJoinKeysOnImport RawJoined, m_baseTblName
-
-IgnoreModeOnImport = False
-PasteToMasterByTable masterLo, RawJoined
-
+よくあるつまずき
+	•	JoinKeyが空の行は従来動作（何も上書きしない）
+	•	参照テーブルが未読込だと当然ヒットしません（import/配下のCSV読み込みを確認）
+	•	列名の大小/全半角/空白に注意（完全一致です）。必要ならMapping側の列名を揃えてください。
 
 ⸻
 
-4) 動作の要点
-	•	JoinKeyセルが空：従来どおり（Import時は何もしない→RawJoinedは通常の無加工）
-	•	JoinKeyセルに指定あり：
-	•	参照テーブル名・キー列（単一/複合）・ベース側列がその行だけのLEFT JOINキーとして使われ、
-	•	参照テーブルの「値の列」（例：new_id）で RawJoined を上書きしてからMasterに貼り付きます。
-	•	性能：参照テーブル単位＋キー列セット単位で1度だけ索引を作成→キャッシュ。各行は O(1) 参照。
+もし動かない/エラーが出たら
+	•	どのモジュールの、何行目で、どんなエラーかを教えてください。
+すぐ直せるようにこの構成にしてあります。
+（プロジェクト固有の GetListObjectByName や LoadAllCsv などは、こちらの宣言を「参照」するだけにしているので、あなた側の実装にそのまま接続されます。）
 
-⸻
-
-5) 例（Mappingの書き方）
-
-出力カラム	データ型	キー	モード	定義ID	pcm_t_キャンペーン	UserAccountMap	JoinKey
-作成者	TEXT		VALUE			new_id	UserAccountMap:old_id=作成者CD
-承認者	TEXT		VALUE			new_id	UserAccountMap:old_id=承認者CD
-
-※ 既存の SEQ 等のキー=○ は従来通りに設定してOK（ベース選定や他JOINに使用）。
-※ Import ボタンだけで new_id／承認者が反映され、Process前からJOIN済みが見られます。
-
-⸻
-
-必要に応じて、「JoinKeyの参照テーブル名とMap_TblNamesの突き合わせを厳密化」「Listパイプラインで1対多時の合流」なども拡張できますが、上記で**要件（JoinKeyをMappingに書くだけでImport時LEFT JOIN）**は満たせます。
-もし既存の Map_TblNames/Map_SrcCols の配列形状が少し異なる場合は、その部分だけ名称を合わせてください。
+必要なら、JoinKeyの表記を UserAccountMap.old_id=… 形式も許容する微修正も出せます（統一運用が楽なら言ってください）。 ￼
