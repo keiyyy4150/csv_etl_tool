@@ -1,49 +1,8 @@
-お待たせ！
-JoinKey 対応＋重複定義のクリーンアップ済みのフルモジュールを、差し替え用の .txt で用意しました。
-そのまま各VBAモジュールに貼り替えてください（既存のボタンや他モジュールはそのまま使えます）。
+①インプット
 
-ダウンロード：
-	•	modMappingHelper_JoinKey.txt￼
-	•	modJoinAndEval_JoinKey.txt￼
-	•	modProcess_JoinKey.txt￼
+②課題：pcm_t_キャンペーン、pcm_t_景表法遵法チェック結果_規制該当確認...などのテーブルがpcm_t_キャンペーンのSEQと紐づいています。
+そのため、Mappingシートにも出力カラム列にSEQと表示されている行には、キー列に○、テーブルの列（pcm_t_キャンペーン、pcm_t_景表法遵法チェック結果_規制該当確認...）には共通する列名が入力されている状態であり、インポート・加工ともに正常に動いている状態です。
 
-⸻
-
-何が入っているか（要約）
-	•	Mapping側
-	•	見出し名で列位置を判定（固定列に依存せず）
-	•	JoinKey（H列・見出し “JoinKey”） を読み取り → Map_JoinSpec() に保持
-	•	Join & 評価側
-	•	JoinKeyのパース（UserAccountMap:old_id=作成者CD や複合キー DeptMap:company_cd=会社CD,dept_cd=部署CD）
-	•	参照テーブル×キー列セットの索引キャッシュ（O(1)で引当て）
-	•	余計な重複プロシージャは完全排除（コンパイルエラー防止）
-	•	Process/Import側
-	•	既存の Import → 無加工JOIN（BuildJoinedRaw） の直後に、
-ApplyJoinKeysOnImport を1本差し込んで 列ごとLEFT JOINの結果で上書き
-	•	ボタン追加なし、Mapping以外の運用は従来どおり
-
-⸻
-
-使い方（再掲）
-	•	Mappingの H列（ヘッダ：JoinKey） に書く：
-	•	単一：UserAccountMap:old_id=作成者CD
-	•	複合：DeptMap:company_cd=会社CD,dept_cd=部署CD
-	•	ベース列を修飾：UserAccountMap:old_id=pcm_t_キャンペーン.作成者CD
-	•	取りたい列（例：new_id）は、従来通り 該当テーブル列セルに記入。
-	•	Import 実行で、RawJoined → Master へ貼り込む直前に new_id が反映されます。
-
-⸻
-
-よくあるつまずき
-	•	JoinKeyが空の行は従来動作（何も上書きしない）
-	•	参照テーブルが未読込だと当然ヒットしません（import/配下のCSV読み込みを確認）
-	•	列名の大小/全半角/空白に注意（完全一致です）。必要ならMapping側の列名を揃えてください。
-
-⸻
-
-もし動かない/エラーが出たら
-	•	どのモジュールの、何行目で、どんなエラーかを教えてください。
-すぐ直せるようにこの構成にしてあります。
-（プロジェクト固有の GetListObjectByName や LoadAllCsv などは、こちらの宣言を「参照」するだけにしているので、あなた側の実装にそのまま接続されます。）
-
-必要なら、JoinKeyの表記を UserAccountMap.old_id=… 形式も許容する微修正も出せます（統一運用が楽なら言ってください）。 ￼
+ただ、例えばpcm_t_キャンペーン.作成者CDをUserAccountMap.old_idと紐づけたいと思ったとき、現行のコードの内容では難しいといわれました。やりたいこととしてはSQLのJOINが複数あるイメージで、これをMasterテーブルに反映させたいです。
+連結するキーが増えてもMappingだけ設定すれば対応できるようにしたいです。
+UserAccountMap.csvは、old_idとnew_idの2カラムしか存在しておらず、pcm_t_キャンペーン.作成者CDとold_idが一致したらnew_idを取りたいです。
