@@ -1,38 +1,44 @@
-いい質問です。結論だけ先に：
-	•	その理解はあと一歩です。
-	•	出力列「作成者」には UserAccountMap 側の new_id を指定してください。
-	•	キー行は別に1行用意して、そこでキャンペーン側の「作成者CD」と UserAccountMap 側の old_id を対応づけます（ここに◯を付ける）。
+原因はだいたい次のどれかです。まず一番多いのは①です。
+
+まず確認（ここが9割）
+	1.	Import後に Process を押していない
+　Importは「無加工JOIN」をMasterに貼るだけで、モード（VALUE/EXPR）を無視します。IgnoreModeOnImport=True で RawJoined をそのまま貼って終わりなので、この段階では new_id は出ません。→ Process を実行すると ApplyTransformSmart が走り、UserAccountMap.new_id が引けます。 ￼  ￼
+
+期待動作：
+	•	Import直後…Masterに「作成者CD（旧ID）」など“元の値”が見える
+	•	Process後……Masterの「作成者」に new_id が入る
+
+それでも出ない時のチェックリスト（上から順に）
+	2.	Mappingの出力行（作成者）
+	•	モード=VALUE になっている
+	•	UserAccountMap 列セルに new_id と書いてある（Campaign側は空でOK） ￼
+	3.	Mappingのキー行（作成者CD 用）
+	•	キー=○ が付いている
+	•	Campaign 列セルに 作成者CD
+	•	UserAccountMap 列セルに old_id（= 対応表のキー列） ￼
+	4.	ベーステーブルが Campaign になっている
+	•	ベースは「キー=○ が立っている最初のテーブル」から選ばれます。Campaign 側のキー行が正しく埋まっていないと、ベースがUserAccountMap側に寄って期待通り引けません。 ￼
+	5.	UserAccountMap.csv が正しく読み込まれている
+	•	置き場所：importFiles/
+	•	ファイル名：UserAccountMap.csv（拡張子含め一致）
+	•	ヘッダ名が一致：old_id,new_id（大文字小文字そのまま）
+	•	Mappingのテーブル名欄に UserAccountMap が含まれている（これが読込対象一覧になる） ￼
+	6.	一致している“つもり”問題（空白・全角半角・ゼロ埋め）
+	•	CSV側の old_id と Campaign側の 作成者CD に、前後空白、全角/半角、ゼロ埋めの差があると一致しません。
+	•	可能なら 両方とも同じ正規化（例：Trim、全角→半角、ゼロ埋め統一）を取り入れてください。
+	•	※定義式での比較は正規化を噛ませていますが、JOINキーは“そのまま”の一致が基本です。必要なら前処理で整えるのが堅いです。 ￼
+	7.	重複キー（old_id が複数行）
+	•	UserAccountMap.csv 側に同じ old_id が複数あると、期待外れ（最初/最後勝ちなど）になります。キーは一意に。
+	8.	列の出力先（Masterの列順）がMappingと一致
+	•	Masterのテーブル列数とMappingの出力列数が一致していないと貼付で失敗します（その場合は警告が出ます）。 ￼
 
 ⸻
 
-最小構成の具体例（Mappingの2行でOK）
-
-ヘッダー（固定列の右側）は、元テーブル名として Campaign と UserAccountMap が並んでいる想定です。
-
-出力カラム	データ型	キー	モード	定義ID	Campaign 列セル	UserAccountMap 列セル
-作成者	TEXT	(空)	VALUE	(空)	(空)	new_id
-作成者CD（キー用）	TEXT	○	VALUE	(空)	作成者CD	old_id
-
-	•	上段（出力列「作成者」）
-	•	ここが最終的に出したい値なので、UserAccountMap 側に new_id を書きます（Campaign 側は空でOK）。
-	•	実行時は、ベース行のキーで UserAccountMap.new_id をO(1)で引き当てます。
-	•	下段（キー定義用のダミー行）
-	•	キー=○ を付け、Campaign 側に 作成者CD、UserAccountMap 側に old_id を書きます。
-	•	これで両テーブルのキー索引が組まれ、Campaign.作成者CD = UserAccountMap.old_id でJOINできる状態になります。 ￼
-	•	「作成者CD（キー用）」列はMasterに出てしまいます。出力したくなければエクスポート時に列除外するか、列名に _ を付けて後段で落とす等の運用にしてください。
+すぐできる動作確認の手順
+	1.	UserAccountMap.csv に テスト用の1行（一致が確実な old_id/new_id）を入れる
+	2.	Mappingを上の通り（出力行=VALUE+new_id、キー行=old_id/作成者CD）にする
+	3.	Import →（new_idは出ないのが正解）→ Process → new_id が入るか確認
 
 ⸻
 
-仕組みの裏付け（ざっくり技術）
-	•	どの列をキーにするかは、「キー=○」の行で、**各テーブル列に書いた“元カラム名”**から自動的に収集されます（BuildKeyIndexes）。 ￼
-	•	ベーステーブルの選定は「キー=○行で元カラムが埋まっている最初のテーブル」が選ばれます（今回は Campaign）。 ￼
-	•	値の取り出しは VALUE 行なら ベース→他テーブルの順に見に行き、他テーブルは GetValueFromTableMulti(tbl, col, key) で キー一致の値を返します。
-	•	Import時は無加工JOIN（モード無視）でMasterに貼られ、Process時に改めて評価＆型最終化、という二段構えです。
-
-⸻
-
-まとめ（質問への直答）
-	•	「作成者CD」はキー行で Campaign 側に書き、対になる UserAccountMap 側は old_id を書きます（ここに◯）。 ￼
-	•	「作成者」出力列は UserAccountMap 側に new_id を書きます（キーは付けない）。 ￼
-
-この2行で、Definitions直書きのIF連打なしに、作成者CD → 作成者（ID置換）が超高速に回るようになります。
+必要なら、あなたの Mappingの該当4行（作成者・承認者の出力行＋キー行）を貼ってくれれば、値の埋め方をピンポイントで直します。
