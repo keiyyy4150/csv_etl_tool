@@ -1,6 +1,5 @@
-①JoinKeyを追加する列はどこでもいいですか？
-②JoinKeyの書き方として、UserAccountMap:old_id=pcm_t_キャンペーン:作成者CD　はあってますか？
-③JoinKeyの書き方として、：ではなく.にできませんか？（例：UserAccountMap.old_id）
+JoinKeyはMappingのH列に追加しました。
+改修箇所があやふやなため、改修が発生したモジュールの全コードをいただけますか？
 
 了解です。①（Mappingに JoinKey を書く方式）で、Import時点で列ごとの LEFT JOIN を反映するための「変更になったコード一式」をまとめてお渡しします。
 以下をそのままコピペで差し替え／追記してください。（ボタン追加なし／既存Mappingの構造は据え置き。JoinKey列だけ追加）
