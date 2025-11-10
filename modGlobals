@@ -92,3 +92,17 @@ Public Function IsAllocated_Long(ByRef arr() As Long) As Boolean
 EH:
     IsAllocated_Long = False
 End Function
+
+
+'==============================================
+' PATCH: JoinKey support for Mapping (H列)
+' Target Module: modGlobals
+' Insert near existing Map_* arrays
+'----------------------------------------------
+' + Public Map_JoinKey() As String
+'----------------------------------------------
+
+'=== PATCH START: JoinKey support ===
+Public Map_JoinKey() As String   ' 出力列ごとの JoinKey 定義（H列）
+'=== PATCH END: JoinKey support ===
+
