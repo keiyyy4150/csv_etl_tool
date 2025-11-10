@@ -1,3 +1,7 @@
+CSVファイルが見つかりません。 JoinKey
+ファイル名は'JounKey.csv'を想定しています　と出ます。
+
+
 もちろんです。差分ではなくフルモジュールを、JoinKey対応込みで作成しました。下記2点をダウンロードしてご利用ください。
 	•	modGlobals_FULL_JoinKey.vba.txt￼
 	•	modJoinAndEval_FULL_JoinKey.vba.txt￼
