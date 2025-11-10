@@ -34,6 +34,8 @@ Public IsProcessed As Boolean
 
 ' Mappingキャッシュ
 Public Map_OutCols()  As String
+Public Map_JoinKey() As String   ' 出力列ごとの JoinKey 定義（H列）
+
 Public Map_DataType() As String
 Public Map_IsKey()    As Boolean
 Public Map_Mode()     As String
@@ -48,21 +50,18 @@ Public m_baseRowIdx() As Long
 '=== 追加：インポート時はモードを無視するフラグ ===
 Public IgnoreModeOnImport As Boolean
 
+' 共通関数
 
 '--- TimeStamp ---
-' 概要: 現在日時を 'yyyymmddhhmmss' 形式の文字列で返す
-' 戻り値: タイムスタンプ文字列（例: 20251027xxxxxx）
-
+' 概要: この手続きの役割を説明します。
 Public Function TimeStamp() As String
     TimeStamp = Format(Now, "yyyymmddhhmmss")
 End Function
 
-
 '--- IsArrayInitialized ---
-' 概要: Variant が配列として初期化済みかを安全に判定（未確保/未初期化配列は False）
+' 概要: この手続きの役割を説明します。
 ' 引数:
-'   ByVal v As Variant  … 判定対象
-' 戻り値: True: 配列で LBound 参照に成功 / False: それ以外
+'   ByVal v As Variant  … 用途を指定します。
 
 Public Function IsArrayInitialized(ByVal v As Variant) As Boolean
     On Error GoTo EH
@@ -76,12 +75,10 @@ EH:
     IsArrayInitialized = False
 End Function
 
-
 '--- IsAllocated_Long ---
-' 概要: Long 配列が確保済みかを安全に判定（未確保/未初期化配列は False）
+' 概要: この手続きの役割を説明します。
 ' 引数:
-'   ByRef arr() As Long  … 判定対象の Long 配列
-' 戻り値: True: 配列で LBound 参照に成功 / False: それ以外
+'   ByRef arr(  … 用途を指定します。
 
 Public Function IsAllocated_Long(ByRef arr() As Long) As Boolean
     On Error GoTo EH
@@ -92,17 +89,3 @@ Public Function IsAllocated_Long(ByRef arr() As Long) As Boolean
 EH:
     IsAllocated_Long = False
 End Function
-
-
-'==============================================
-' PATCH: JoinKey support for Mapping (H列)
-' Target Module: modGlobals
-' Insert near existing Map_* arrays
-'----------------------------------------------
-' + Public Map_JoinKey() As String
-'----------------------------------------------
-
-'=== PATCH START: JoinKey support ===
-Public Map_JoinKey() As String   ' 出力列ごとの JoinKey 定義（H列）
-'=== PATCH END: JoinKey support ===
-
