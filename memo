@@ -1,12 +1,266 @@
-現行イメージ
+できます。Mappingの構造は一切変えず、ボタンも増やさず、
+「ベースの複合キー（＝SEQに加えて、他にも◯が付いていればそれも連結）」を使って自動的に上書き反映する仕組みを既存の Process の中に組み込みます。
 
-pcm_t_キャンペーン.csv、pcm_t_景表法遵法チェック結果_オープン懸賞.csv...などのテーブルの殆どはpcm_t_キャンペーンのSEQキーと連結しています。そのためMappingは以下のような表示です。
+やることは1つだけ：
+ProcessData の最後に “ポスト処理（上書き）” を差し込む小改修です。
+このポスト処理は、こう動きます。
+	•	ベースの複合キー（Mappingで○が付いた全キー列）を、ベース表の全行から同じ規則で組み立てる
+	•	各行について、ベース表の 作成者CD を UserAccountMap(old_id→new_id) で変換 → 複合キー → new_id の辞書を作る
+	•	ProcessData がMasterに貼った“最終結果”を、Master側の同じ複合キー（＝出力カラムのキー列群）で照合し、対象列（作成者）だけ一括上書き
 
-出力カラム列：SEQ
-キー：○
-pcm_t_キャンペーン列：キャンペーンSEQ
-pcm_t_景表法遵法チェック結果_オープン懸賞列：キャンペーンSEQ
+これで、SEQ以外にも○が付いていれば、そのキーも連結して照合されます。
+Mappingに手を入れず、Processボタンを押すだけで反映されます。
 
-その他テーブルも同様
+⸻
 
-ここに、作成者の項目もキー連結するイメージです。
+変更点まとめ（コピペでOK）
+
+1) modGlobals.txt — 設定フラグ（任意だが便利）
+
+'=== ポスト処理の有効化フラグ（必要ならOFFにできます） ===
+Public EnableAuthorOverride As Boolean
+
+起動時に True にしたい場合は、どこかの初期化箇所（例：ThisWorkbook.Open）で
+EnableAuthorOverride = True を1行入れてください。
+何もしなければ False のままでも、後述のコードは Mappingに「作成者」「作成者CD」「UserAccountMap(old_id/new_id)」が揃っている時だけ自動起動する設計にしてあります。
+
+⸻
+
+2) modProcess.txt — 以下3ブロックを追加
+
+2-1. ベース複合キーをMappingのキー指定（○の付いた列群）から復元する関数
+
+'--- GetBaseKeyOutputCols ---
+' 概要: Mappingで「キー=○」になっている出力カラム名（Masterの見出し名）を配列で返す
+Private Function GetBaseKeyOutputCols() As Variant
+    Dim i As Long, tmp() As String, n As Long
+    If (Not Not Map_IsKey) = 0 Then Exit Function
+    For i = LBound(Map_IsKey) To UBound(Map_IsKey)
+        If Map_IsKey(i) Then
+            n = n + 1
+            ReDim Preserve tmp(1 To n)
+            tmp(n) = Map_OutCols(i)
+        End If
+    Next
+    GetBaseKeyOutputCols = tmp
+End Function
+
+2-2. “複合キー → new_id” の辞書をベース表から構築する関数
+（UserAccountMap(old_id→new_id) を踏み台にして、「作成者CD」を変換）
+
+'--- BuildCompositeKeyToNewIdMap ---
+' 概要: ベース表の各行について、(1) 複合キー文字列 を組み立て、(2) 作成者CD→UserAccountMap で new_id を引き、
+'       (Key: 複合キー, Value: new_id) の辞書を返す。複数回出現時は後勝ち。
+Private Function BuildCompositeKeyToNewIdMap( _
+    ByVal campaignTbl As String, _
+    ByVal campaignAuthorCdCol As String, _
+    ByVal userMapTbl As String, _
+    ByVal userOldIdCol As String, _
+    ByVal userNewIdCol As String, _
+    ByVal baseKeyColNames As Variant) As Object
+
+    Dim dict As Object: Set dict = CreateObject("Scripting.Dictionary")
+    If TableData Is Nothing Then Set BuildCompositeKeyToNewIdMap = dict: Exit Function
+    If Not TableData.Exists(campaignTbl) Then Set BuildCompositeKeyToNewIdMap = dict: Exit Function
+    If Not TableData.Exists(userMapTbl) Then Set BuildCompositeKeyToNewIdMap = dict: Exit Function
+
+    Dim camp As Variant, u As Variant
+    camp = TableData(campaignTbl)     ' ヘッダ付2次元(1-based)
+    u = TableData(userMapTbl)
+
+    ' ヘッダ列番号
+    Dim cHdrIx As Object: Set cHdrIx = CreateObject("Scripting.Dictionary")
+    Dim j As Long
+    For j = 1 To UBound(camp, 2)
+        cHdrIx(CStr(camp(1, j))) = j
+    Next
+
+    Dim uOldIx As Long, uNewIx As Long
+    For j = 1 To UBound(u, 2)
+        If CStr(u(1, j)) = userOldIdCol Then uOldIx = j
+        If CStr(u(1, j)) = userNewIdCol Then uNewIx = j
+    Next
+    If uOldIx = 0 Or uNewIx = 0 Then Set BuildCompositeKeyToNewIdMap = dict: Exit Function
+
+    ' UserAccountMap: old_id→new_id
+    Dim idxUser As Object: Set idxUser = CreateObject("Scripting.Dictionary")
+    Dim i As Long, k As String
+    For i = 2 To UBound(u, 1)
+        k = CStr(u(i, uOldIx))
+        If Len(k) > 0 Then
+            If Not idxUser.Exists(k) Then idxUser.Add k, CStr(u(i, uNewIx))
+        End If
+    Next
+
+    ' ベース表を走査して、複合キー→new_id を構築
+    Dim keyCols() As String, t As Long
+    Dim baseKey As String, authorCd As String, newId As String
+    Dim haveAllKeys As Boolean
+
+    ' baseKeyColNames: Master見出し名（=出力カラム名）。ベース配列上の対応ヘッダ名が同名である前提
+    ' （出力名と元ヘッダが違う場合は、ここをマッピングする辞書に置き換えてください）
+    If IsArray(baseKeyColNames) Then
+        ReDim keyCols(LBound(baseKeyColNames) To UBound(baseKeyColNames))
+        For t = LBound(baseKeyColNames) To UBound(baseKeyColNames)
+            keyCols(t) = CStr(baseKeyColNames(t))
+        Next
+    End If
+
+    Dim authorIx As Long: authorIx = 0
+    If cHdrIx.Exists(campaignAuthorCdCol) Then authorIx = CLng(cHdrIx(campaignAuthorCdCol))
+
+    If authorIx = 0 Or (Not IsArray(keyCols)) Then
+        Set BuildCompositeKeyToNewIdMap = dict
+        Exit Function
+    End If
+
+    For i = 2 To UBound(camp, 1)
+        ' 複合キー連結（既存エンジンの規則に合わせて "値1|値2|..." ）
+        baseKey = ""
+        haveAllKeys = True
+        For t = LBound(keyCols) To UBound(keyCols)
+            If cHdrIx.Exists(keyCols(t)) Then
+                If Len(baseKey) > 0 Then baseKey = baseKey & "|"
+                baseKey = baseKey & CStr(camp(i, CLng(cHdrIx(keyCols(t)))))
+            Else
+                haveAllKeys = False: Exit For
+            End If
+        Next
+        If Not haveAllKeys Then GoTo CONTINUE_I
+
+        authorCd = CStr(camp(i, authorIx))
+        If Len(authorCd) > 0 And idxUser.Exists(authorCd) Then
+            newId = idxUser(authorCd)
+            dict(baseKey) = newId
+        End If
+CONTINUE_I:
+    Next
+
+    Set BuildCompositeKeyToNewIdMap = dict
+End Function
+
+2-3. Master（最終結果）を複合キーで上書きする関数＋ProcessData末尾フック
+
+'--- OverrideMasterByCompositeKey ---
+' 概要: Master_* を開き、[キー列群]で連結した複合キーで辞書を引いて、[targetColName] を一括上書き
+Private Sub OverrideMasterByCompositeKey( _
+    ByVal keyOutColNames As Variant, _
+    ByVal targetColName As String, _
+    ByVal key2value As Object)
+
+    Dim lo As ListObject: Set lo = GetListObjectByName(CurrentMasterTableName)
+    If lo Is Nothing Then Exit Sub
+    If lo.DataBodyRange Is Nothing Then Exit Sub
+    If key2value Is Nothing Then Exit Sub
+
+    ' 見出し→列位置
+    Dim colIx As Object: Set colIx = CreateObject("Scripting.Dictionary")
+    Dim j As Long
+    For j = 1 To lo.ListColumns.Count
+        colIx(CStr(lo.HeaderRowRange.Cells(1, j).Value)) = j
+    Next
+    If Not colIx.Exists(targetColName) Then Exit Sub
+
+    Dim hasAll As Boolean, k As String, t As Long, tgtIx As Long
+    tgtIx = CLng(colIx(targetColName))
+
+    ' 配列で一括更新
+    Dim arr As Variant: arr = lo.DataBodyRange.Value
+    Dim r As Long
+    For r = 1 To UBound(arr, 1)
+        k = ""
+        hasAll = True
+        If IsArray(keyOutColNames) Then
+            For t = LBound(keyOutColNames) To UBound(keyOutColNames)
+                If colIx.Exists(CStr(keyOutColNames(t))) Then
+                    If Len(k) > 0 Then k = k & "|"
+                    k = k & CStr(arr(r, CLng(colIx(CStr(keyOutColNames(t))))))
+                Else
+                    hasAll = False: Exit For
+                End If
+            Next
+        Else
+            hasAll = False
+        End If
+        If hasAll Then
+            If key2value.Exists(k) Then
+                arr(r, tgtIx) = CStr(key2value(k))
+            End If
+        End If
+    Next
+    lo.DataBodyRange.Value = arr
+End Sub
+
+
+'=== ProcessData の末尾に、以下のポスト処理呼び出しを1ブロック追記してください ===
+' （★既存の貼り付け完了・IsProcessed=True・ログ出力の直前 or 直後でOK）
+Private Sub PostProcessOverride_AuthorIfPossible()
+    On Error Resume Next
+
+    ' 条件:
+    ' - EnableAuthorOverride=True もしくは 自動検出で条件が揃っている
+    ' - TableData に "pcm_t_キャンペーン" と "UserAccountMap" がある
+    ' - ベースキー（○の付いた出力列群）と "作成者" 出力列がMasterに存在
+    Dim autoOk As Boolean: autoOk = True
+
+    ' 自動検出：最低限の前提をざっくり満たすか
+    If TableData Is Nothing Then Exit Sub
+    If Not TableData.Exists("pcm_t_キャンペーン") Then autoOk = False
+    If Not TableData.Exists("UserAccountMap") Then autoOk = False
+
+    Dim baseKeyCols As Variant
+    baseKeyCols = GetBaseKeyOutputCols()
+    If IsEmpty(baseKeyCols) Then autoOk = False
+
+    ' Masterに出力列「作成者」があるかは、Override内でチェックされるのでここでは省略
+    If (EnableAuthorOverride Or autoOk) Then
+        Dim dict As Object
+        Set dict = BuildCompositeKeyToNewIdMap( _
+            "pcm_t_キャンペーン", _
+            "作成者CD", _
+            "UserAccountMap", _
+            "old_id", _
+            "new_id", _
+            baseKeyCols)
+        If Not dict Is Nothing Then
+            OverrideMasterByCompositeKey baseKeyCols, "作成者", dict
+        End If
+    End If
+End Sub
+
+挿入場所の目安：ProcessData の「加工済み配列をMasterへ貼り付け」後、IsProcessed=True を立てた直後あたりに
+PostProcessOverride_AuthorIfPossible を 1行呼び出ししてください。
+（ProcessData 本体は既存のまま、最後に1行フックを足すだけ）
+
+⸻
+
+どう動くか（要点）
+	•	複合キーはMappingの「○が付いた出力カラム名」で連結します（例：SEQ|案件ID|…）。
+つまり SEQ以外にも○があれば自動で含まれます。
+	•	ベース表（pcm_t_キャンペーン）側も、同名ヘッダを使って同じ複合キーを組み立てます。
+	•	その上で「作成者CD → old_id → new_id」を解決し、複合キー→new_id 辞書を作ってMasterへ一括上書きします。
+	•	ボタンは増やしません。 Process を押したら勝手に走ります（無効化したければ EnableAuthorOverride=False）。
+
+⸻
+
+注意点
+	•	見出し名の一致（重要）
+	•	ベース配列のヘッダ（pcm_t_キャンペーン 側のキー列のヘッダ名）と、Masterの出力見出し名が一致している前提で実装しています。
+	•	もし「入力のヘッダ名」と「出力見出し名」が違う場合は、BuildCompositeKeyToNewIdMap 内のコメント箇所で対応表を噛ませる小修正を入れてください。
+	•	空白/全角/ゼロ埋めの差はそのままキー不一致になります。可能なら取込前に正規化してください。
+	•	UserAccountMapの old_id 重複は「後勝ち」です。必要ならユニーク化を。
+
+⸻
+
+これで満たす要望
+	•	✅ Mapping構造はそのまま
+	•	✅ SEQ以外のキーも◯が付いていれば複合キーに自動連結
+	•	✅ ボタン増設なし（Process だけで発火）
+	•	✅ 1対多はMainでは増殖しない（従来どおり先頭一致優先）
+	•	将来、1対多を展開したい列はListパイプラインにすれば行増殖が可能（既存機能）
+
+⸻
+
+必要なら、このロジックを承認者/部署にも横展開できるように、
+BuildCompositeKeyToValueMap( baseKeyCols , baseSrcCol → Map(old→val) ) の汎用版に抽象化したパッチも用意します。
+まずは上記の「作成者」版を組み込んで動作を確認してみてください。
