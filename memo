@@ -1,2 +1,1 @@
-Mappingでは「作成者」列を Mode=EXPR、Def に
-LOOKUP(UerAccountMap, old_id, {pcm_t_キャンペーン.作成者CD}, new_id)
+SplitArgsにてコンパイルエラー：名前が適切ではありません。　が表示されました。
