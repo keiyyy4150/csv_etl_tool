@@ -1,7 +1,133 @@
-エラーは出なくなりましたが以下の設定でも加工は空欄になりました。
-LOOKUP(UerAccountMap, old_id, {pcm_t_キャンペーン.作成者CD}, new_id)
+空欄になる原因は、ほぼ確実に参照名のズレ（列名／テーブル名／全半角・空白）か、正規化の不足です。
+まずは一番起きやすいポイントから直してみてください。
 
+⸻
 
-出力カラム：作成者のpcm_t_キャンペーン列には「作成者ID」を、UerAccountMap列には何も表示させず、キーにも○がついていない設定で実行しました。
+まず確認（超重要）
+	1.	ベース列名のズレ
+　式が {pcm_t_キャンペーン.作成者CD} になっていると、
+　実データ側が 「作成者ID」 の場合は 常に空になります。
+　→ 今回の設定文面だとベースは「作成者ID」っぽいので、式は次に変更：
 
-出力カラム：作成者のpcm_t_キャンペーン列には「作成者ID」を、UerAccountMap列には「old_id」を入れ、キーに○をつけた設定でも実行しました。
+LOOKUP(UerAccountMap, old_id, {pcm_t_キャンペーン.作成者ID}, new_id)
+
+	2.	テーブル名のズレ
+　UerAccountMap と 完全一致させてください（.csv は付けない／大文字小文字・スペースなし）。
+　もし Mapping のテーブル一覧が「UerAccountMap**.csv**」なら、式の第1引数もそれに合わせる必要があります。
+　例：LOOKUP(UerAccountMap.csv, old_id, {…}, new_id)
+	3.	ヘッダー名のズレ
+　old_id, new_id はヘッダーの表記そのままに。
+　（old id や OLD_ID、前後空白、全角下線などがあると一致しません）
+	4.	Process（データ加工）を実行
+　Import 直後は無加工です。Process ボタンで EXPR を評価してください。
+
+⸻
+
+それでもダメなとき（堅牢化パッチ）
+
+CSVの前後空白・全角混在・BOM が原因でも取りこぼさないよう、LOOKUPの実装を“正規化一致”に強化します。
+以下を あなたの modJoinAndEval に上書きしてください（2か所だけ）。
+
+(1) インデックス作成でキーを正規化して保持
+
+'--- EnsureLookupIndex（置き換え） ---
+Private Function EnsureLookupIndex(tbl As String, findCol As String) As Object
+    If LookupIndex Is Nothing Then Set LookupIndex = CreateObject("Scripting.Dictionary")
+    Dim k As String: k = tbl & "|" & findCol
+    If LookupIndex.Exists(k) Then
+        Set EnsureLookupIndex = LookupIndex(k)
+        Exit Function
+    End If
+
+    Dim dict As Object: Set dict = CreateObject("Scripting.Dictionary")
+    If TableData Is Nothing Then GoTo REG
+    If Not TableData.Exists(tbl) Then GoTo REG
+
+    Dim arr As Variant: arr = TableData(tbl)
+    Dim cFind As Long: cFind = FindColumnIndex(arr, StripQuotes(findCol))
+    If cFind > 0 Then
+        Dim r As Long
+        For r = LBound(arr, 1) + 1 To UBound(arr, 1)
+            Dim v As String: v = NormalizeText(arr(r, cFind)) ' ★正規化してキー化
+            If Not dict.Exists(v) Then dict.Add v, r  ' 先勝ち
+        Next
+    End If
+REG:
+    LookupIndex(k) = dict
+    Set EnsureLookupIndex = dict
+End Function
+
+(2) 参照時も正規化＆クォート除去に対応
+
+'--- GetValueByColumn（置き換え） ---
+Private Function GetValueByColumn(tbl As String, findCol As String, findVal As String, retCol As String) As String
+    On Error GoTo SAFE
+    If TableData Is Nothing Then Exit Function
+
+    ' ★ 引数側もクォート除去＆正規化対応
+    tbl     = StripQuotes(tbl)
+    findCol = StripQuotes(findCol)
+    retCol  = StripQuotes(retCol)
+
+    If Not TableData.Exists(tbl) Then Exit Function
+
+    Dim arr As Variant: arr = TableData(tbl)
+
+    ' 返す列の列番号（名前 or 数値）
+    Dim cRet As Long
+    If IsNumeric(retCol) Then
+        cRet = CLng(retCol)
+    Else
+        cRet = FindColumnIndex(arr, retCol)
+    End If
+    If cRet = 0 Then Exit Function
+
+    ' まずインデックス（正規化キーでヒット）
+    Dim idx As Object: Set idx = EnsureLookupIndex(tbl, findCol)
+    Dim key As String: key = NormalizeText(findVal) ' ★正規化
+    If idx.Exists(key) Then
+        GetValueByColumn = CStr(arr(idx(key), cRet))
+        Exit Function
+    End If
+
+    ' フォールバック線形（最悪ケース）
+    Dim cFind As Long: cFind = FindColumnIndex(arr, findCol)
+    If cFind = 0 Then Exit Function
+    Dim r As Long
+    For r = LBound(arr, 1) + 1 To UBound(arr, 1)
+        If NormalizeText(arr(r, cFind)) = key Then
+            GetValueByColumn = CStr(arr(r, cRet))
+            Exit Function
+        End If
+    Next
+SAFE:
+End Function
+
+これで、前後空白／全角→半角の差があっても一致します。
+また、LOOKUP("UerAccountMap", "old_id", {…}, "new_id") のようにクォート有りで書いても動くようになります（内部で StripQuotes しているため）。
+
+⸻
+
+動作テスト（式の切り分け）
+	1.	EXPRに一時的に
+
+{pcm_t_キャンペーン.作成者ID}
+
+を入れて、そのセルに値が出るか確認
+→ 出ないなら、トークン名のズレです（テーブル名・列名の表記を見直し）。
+	2.	次に
+
+LOOKUP(UerAccountMap, old_id, {pcm_t_キャンペーン.作成者ID}, new_id)
+
+に戻す。
+→ まだ空なら、UerAccountMap 側のヘッダー名 or テーブル名のズレ。
+　Mappingのテーブル一覧に載っている正確な名前で第1引数と列名を合わせてください。
+
+⸻
+
+まとめ
+	•	今回の症状は 「作成者CD ↔ 作成者ID」の列名ズレが濃厚です。まず式を直してください。
+	•	上の2か所のパッチで 空白・全角・クォートにも強くなります。
+	•	Process 実行で EXPR が評価されます（Importだけでは空欄のまま）。
+
+もし Mapping の「テーブル名一覧」スクショ（もしくは列名のリスト）を貼っていただければ、式をその表記に完全一致させた形で書き起こします！
