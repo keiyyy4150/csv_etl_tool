@@ -3,3 +3,5 @@ LOOKUP(UerAccountMap, old_id, {pcm_t_キャンペーン.作成者CD}, new_id)
 
 
 出力カラム：作成者のpcm_t_キャンペーン列には「作成者ID」を、UerAccountMap列には何も表示させず、キーにも○がついていない設定で実行しました。
+
+出力カラム：作成者のpcm_t_キャンペーン列には「作成者ID」を、UerAccountMap列には「old_id」を入れ、キーに○をつけた設定でも実行しました。
