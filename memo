@@ -1,47 +1,5 @@
-BuildDefinitionsFromSheetエラー：Definitions参照に失敗しました：定義ID=[LOOKUP]
-
-
-原因は、LOOKUP を “定義ID” として参照しに行ってしまっていることです。
-つまり、Mapping 側で LOOKUP を 式(本文) ではなく Definitions表のID として解釈され、Definitions シートに ID=LOOKUP の行が無いのでエラーになっています。
-
-直し方（おすすめ：EXPRに式を直書き）
-
-作成者列の Mapping をこうしてください。
-	•	Mode: EXPR
-	•	Def（本文）:
-
+エラーは出なくなりましたが以下の設定でも加工は空欄になりました。
 LOOKUP(UerAccountMap, old_id, {pcm_t_キャンペーン.作成者CD}, new_id)
 
 
-	•	DefId / 定義ID のような “ID参照用セル” がある場合は 空欄 にする（←ここに LOOKUP と入れてはいけない）
-
-ポイント：BuildDefinitionsFromSheet は “定義ID” 欄が埋まっていると Definitions 表を引きに行きます。今回やりたいのは EXPRの本文に LOOKUP を書いて評価 なので、ID欄は空にしてください。
-
-⸻
-
-代替（どうしてもID参照にしたい場合）
-
-Definitions シートに以下の行を追加します。
-	•	ID: LOOKUP
-	•	Mode/Type: EXPR（シートの項目名に合わせて）
-	•	Body/Def:
-
-LOOKUP(UerAccountMap, old_id, {pcm_t_キャンペーン.作成者CD}, new_id)
-
-
-
-そして Mapping 側は：
-	•	Mode: EXPR（またはシステム仕様に従って）
-	•	定義ID: LOOKUP（本文は空 or 任意）
-
-※ 実装によっては「ModeはVALUEでも、定義ID展開→結果をEXPRとして解釈」パターンもあります。あなたの実装が ApplyTransformSmart → EvaluateExpr を使っている前提なら、Modeは EXPR が確実です。
-
-⸻
-
-クイック診断チェック
-	•	作成者列の「定義ID」セルに LOOKUP と入れていませんか？ → 消す
-	•	作成者列の Mode は EXPR になっていますか？ → YESに
-	•	式は Def（本文）セルにそのまま入っていますか？ →
-LOOKUP(UerAccountMap, old_id, {pcm_t_キャンペーン.作成者CD}, new_id)
-
-これで BuildDefinitionsFromSheet のエラーは解消し、**Process（データ加工）**実行時に Master の「作成者」に new_id が入ります。
+出力カラム：作成者のpcm_t_キャンペーン列には「作成者ID」を、UerAccountMap列には何も表示させず、キーにも○がついていない設定で実行しました。
