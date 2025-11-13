@@ -1,383 +1,3 @@
-OK、その要件なら「クリアボタンの挙動」と「Definitionsに書いた数式をそのままMasterに反映」の両方を満たす形で、
-	•	modProcess（Clearボタンはテーブル行ごとクリア＝数式も消す／元の挙動）
-	•	modJoinAndEval（DefinitionsのDefinitionに書いた =IFERROR(VLOOKUP(...)) みたいな式を、そのままセルに書き込めるように対応）
-
-この 2モジュールだけ を改修対象として、全量コードを置いておきます。
-（他のモジュールは一切触っていません）
-
-⸻
-
-1️⃣ modProcess（全量・Clearは元の挙動＝行ごと削除）
-
-Option Explicit
-'============================================================
-' modProcess
-' 概要: パイプラインの切替、Import/Processのワークフロー、Masterテーブルへの貼り付け、エンコード選択等
-'============================================================
-
-
-'=== 既定行数にマスターの表サイズを戻す（B4セル：行数設定 / 空なら20000） ===
-' 概要: Master_* テーブルのサイズを初期化（必要行/列の確保・不要領域の削除）
-' 備考: Process 前に安全なサイズへ調整
-
-Private Sub ResetMasterSize(masterLo As ListObject)
-    On Error Resume Next
-    If masterLo Is Nothing Then Exit Sub
-    Dim ws As Worksheet: Set ws = masterLo.Parent
-    Dim reserve As Long
-    reserve = CLng(Val(ws.Range("B4").Value)) ' 任意セルに既定行数を置く運用。空なら下で既定値に
-    If reserve <= 0 Then reserve = 20000
-
-    Dim cols As Long: cols = masterLo.ListColumns.Count
-    Dim newRg As Range
-    Set newRg = masterLo.HeaderRowRange.Resize(reserve + 1, cols)
-    masterLo.Resize newRg
-    If Not masterLo.DataBodyRange Is Nothing Then masterLo.DataBodyRange.ClearContents
-    On Error GoTo 0
-End Sub
-
-
-'=== 高速クリア：テーブルのデータ部を空に（列構成は維持） ===
-' 概要: 指定 ListObject のデータ行を高速でクリアします（ヘッダ保持）
-' 引数:
-'   lo As ListObject  … クリア対象のテーブル
-
-Private Sub FastClearTable(lo As ListObject)
-    If lo Is Nothing Then Exit Sub
-    If lo.DataBodyRange Is Nothing Then
-        ' 既に0行
-        Exit Sub
-    End If
-    ' 行がある場合は全部削除（列は温存）
-    lo.DataBodyRange.Delete xlShiftUp
-End Sub
-
-
-'==============================
-' パイプライン切替（Main / List）
-'==============================
-' 概要: Main パイプライン用のマッピング/マスター/エクスポート設定
-' 備考: Mapping/Main を使用（1対多は禁止）
-' 備考: ログに 'Switched pipeline: Main' を出力
-
-Public Sub UsePipelineMain()
-    CurrentMappingTableName = "Mapping_Main"
-    CurrentMasterTableName = "Master_Main"
-    CurrentExportBaseName = "main"
-    AllowOneToMany = False
-    WriteLog "INFO", "Switched pipeline: Main"
-End Sub
-
-' 概要: List パイプライン用のマッピング/マスター/エクスポート設定を適用
-' 備考: Mapping/List を使用（1対多を許可）
-' 備考: ログに 'Switched pipeline: List' を出力
-
-Public Sub UsePipelineList()
-    CurrentMappingTableName = "Mapping_List"
-    CurrentMasterTableName = "Master_List"
-    CurrentExportBaseName = "list"
-    AllowOneToMany = True
-    WriteLog "INFO", "Switched pipeline: List"
-End Sub
-
-'==============================
-' エンコード選択
-'==============================
-
-Public Sub ChooseEncoding()
-    Dim s As String
-    s = InputBox( _
-        "読み込み・書き出しのエンコードを指定してください。" & vbCrLf & _
-        "AUTO / UTF-8 / Shift_JIS / UTF-16LE", _
-        "Encoding Mode", IIf(Len(CurrentEncodingMode) = 0, "AUTO", CurrentEncodingMode))
-    If s = "False" Then Exit Sub
-    s = UCase$(Trim$(s))
-    Select Case s
-        Case "AUTO", "UTF-8", "UTF8": CurrentEncodingMode = IIf(s = "UTF8", "UTF-8", s)
-        Case "SHIFT_JIS", "SJIS", "CP932": CurrentEncodingMode = "SHIFT_JIS"
-        Case "UTF-16LE", "UTF16LE", "UNICODE": CurrentEncodingMode = "UTF-16LE"
-        Case Else: CurrentEncodingMode = "AUTO"
-    End Select
-    EnsureFolder ThisWorkbook.Path & "\" & LOG_FOLDER & "\"
-    WriteLog "INFO", "Encoding set: " & CurrentEncodingMode
-    MsgBox "Encoding Mode: " & CurrentEncodingMode, vbInformation
-End Sub
-
-'==============================
-' Import：CSV読込→キー索引→JOIN（無加工）→Master貼付
-'==============================
-
-Public Sub ImportFiles(pipeLine)
-    '例外発生時EHへジャンプし終了
-    On Error GoTo EH
-    '開始時刻の記録
-    Dim tStart As Date: tStart = Now
-    '読み込み時の文字コード設定
-    If Len(CurrentEncodingMode) = 0 Then CurrentEncodingMode = "AUTO"
-    
-    '読み込みパイプラインの選択
-    If pipeLine = "Main" Then  ' Main読み込み時
-        UsePipelineMain
-    ElseIf pipeLine = "List" Then  ' List読み込み時
-        UsePipelineList
-    End If
-    
-    'Mappingシートの読み取り
-    Dim ok As Boolean
-    'Mapping読み取り処理（modMappingHelper）
-    ok = ReadMappingFromTableName(CurrentMappingTableName)
-    If Not ok Then
-        MsgBox "Mapping の読み取りに失敗しました。", vbCritical
-        Exit Sub
-    End If
-    
-    'インポート対象フォルダの絶対パスを作成
-    Dim importPath As String: importPath = ThisWorkbook.Path & "\" & IMPORT_FOLDER & "\"
-    EnsureFolder ThisWorkbook.Path & "\" & LOG_FOLDER & "\"
-    Set TableData = CreateObject("Scripting.Dictionary")  ' CSV読み込み後の全テーブルデータを保持する Dictionary を初期化
-    If Not LoadAllCsv(importPath, Map_TblNames, TableData) Then Exit Sub
-    
-    'マッピング／設定に基づくフィルターが存在すれば適用（存在しない場合は無処理）
-    ApplyFiltersIfExist
-    
-    'JOINに必要なキーのインデックスを構築
-    BuildKeyIndexes
-    m_baseTblName = PickBaseTableName(Map_TblNames, Map_SrcCols, Map_IsKey)  ' JOINのベースとなるテーブル名を選定
-    If Len(m_baseTblName) = 0 And (Not Not Map_TblNames) <> 0 Then m_baseTblName = Map_TblNames(0)  ' ベーステーブル名が決まらない場合フォールバック
-     
-    '無加工JOIN
-    IgnoreModeOnImport = True
-    RawJoined = BuildJoinedRaw(m_baseTblName)
-    IgnoreModeOnImport = False
-    
-    HasRaw = True: IsProcessed = False  ' 内部状態フラグの更新
-    
-    '貼り付け先Masterテーブルを取得
-    Dim masterLo As ListObject
-    Set masterLo = GetListObjectByName(CurrentMasterTableName)
-    If masterLo Is Nothing Then
-        MsgBox "Masterテーブルが見つかりません: " & CurrentMasterTableName, vbCritical
-        Exit Sub
-    End If
-    
-    '無加工JOIN結果をMasterテーブルへ貼り付け
-    PasteToMasterByTable masterLo, RawJoined
-    
-    '完了通知
-    MsgBox "ファイルインポート完了（無加工をMasterへ反映）", vbInformation
-    Exit Sub
-EH:
-    MsgBox "ImportFilesでエラー: " & Err.Description, vbCritical
-End Sub
-
-
-'==============================
-' Process：加工適用 → Masterへ
-'==============================
-
-Public Sub ProcessData(pipeLine)
-    '例外発生時EHへジャンプし終了
-    On Error GoTo EH
-    '開始時刻の記録
-    Dim tStart As Date: tStart = Now
-    
-    'インポート処理未実施の場合はエラー終了
-    If Not HasRaw Then
-        MsgBox "先に『ファイルインポート』を実行してください。", vbExclamation
-        Exit Sub
-    End If
-    
-    '読み込み時の文字コード設定
-    If Len(CurrentEncodingMode) = 0 Then CurrentEncodingMode = "AUTO"
-    
-    '読み込みパイプラインの選択
-    If pipeLine = "Main" Then
-        UsePipelineMain
-    ElseIf pipeLine = "List" Then
-        UsePipelineList
-    End If
-    
-    'Mappingシートの読み取り
-    Dim ok As Boolean
-    ok = ReadMappingFromTableName(CurrentMappingTableName)
-    If Not ok Then
-        WriteLog "ERROR", "Mapping read failed in ProcessData"
-        MsgBox "Mapping の読み取りに失敗しました。", vbCritical
-        Exit Sub
-    End If
-    
-    ' 無加工データ(RawJoined)に対してスマート変換を適用
-    ' - 例: 型変換、正規化、列追加・再計算、条件フィルタ、列順序変更など
-    ' - 戻り値は「加工済み配列」
-    Dim procArr As Variant
-    procArr = ApplyTransformSmart(RawJoined)
-    
-    ' 出力先Masterのテーブルを取得
-    Dim masterLo As ListObject
-    Set masterLo = GetListObjectByName(CurrentMasterTableName)
-    If masterLo Is Nothing Then
-        MsgBox "Masterテーブルが見つかりません: " & CurrentMasterTableName, vbCritical
-        Exit Sub
-    End If
-    
-    ' 加工済み配列をMasterへ貼り付け
-    PasteToMasterByTable masterLo, procArr
-    IsProcessed = True  ' 加工完了フラグ
-    
-    ' ログ出力(行数/列数/経過時間)
-    ' - UBound(procArr, 1): 行数上限インデックス
-    ' - UBound(procArr, 2): 列数上限インデックス
-    ' - Now - tStart      : 経過時間(TimeSpan)
-    WriteLog "INFO", "ProcessData: done / rows=" & UBound(procArr, 1) & " / cols=" & UBound(procArr, 2) & " / elapsed=" & Format(Now - tStart, "hh:nn:ss")
-    
-    ' 完了通知
-    MsgBox "データ加工完了（Masterへ反映）", vbInformation
-    Exit Sub
-EH:
-    WriteLog "ERROR", "ProcessData error: " & Err.Number & " " & Err.Description
-    MsgBox "データ加工でエラー: " & Err.Description, vbCritical
-End Sub
-
-
-'==============================
-' Clear：Masterクリア＆中間データ破棄
-'==============================
-
-Public Sub ClearData()
-    Dim prevCalc As XlCalculation
-    Dim prevEvt As Boolean, prevUpd As Boolean
-    prevCalc = Application.Calculation
-    prevEvt = Application.EnableEvents
-    prevUpd = Application.ScreenUpdating
-    Application.Calculation = xlCalculationManual
-    Application.EnableEvents = False
-    Application.ScreenUpdating = False
-
-    On Error GoTo FIN
-
-    Dim lo As ListObject
-
-    Set lo = GetListObjectByName("Master_Main")
-    If Not lo Is Nothing Then FastClearTable lo
-
-    Set lo = GetListObjectByName("Master_List")
-    If Not lo Is Nothing Then FastClearTable lo
-
-    ' 中間データのクリア
-    On Error Resume Next
-    Set TableData = Nothing
-    Set KeyIndexSingle = Nothing
-    Set KeyIndexMulti = Nothing
-    Erase Map_OutCols: Erase Map_DataType
-    Erase Map_IsKey: Erase Map_Mode: Erase Map_Def
-    Erase Map_IsKey: Erase Map_TblNames
-    Erase Map_SrcCols
-    On Error GoTo 0
-
-    WriteLog "INFO", "ClearData: done (fast)"
-    MsgBox "データクリアを実行しました。"
-
-FIN:
-    Application.Calculation = prevCalc
-    Application.EnableEvents = prevEvt
-    Application.ScreenUpdating = prevUpd
-End Sub
-
-
-'==============================
-' Masterへ貼付（行数だけ合わせて一括代入）
-'==============================
-' 概要: テーブル名→対象 Master_* へ配列を貼り付け
-' 引数:
-'   tblName As String  … 貼付対象テーブル名
-'   arr As Variant  … 貼付する2次元配列（ヘッダ付）
-
-Public Sub PasteToMasterByTable(masterTbl As ListObject, dataArr As Variant)
-    Dim rows As Long, cols As Long
-    rows = UBound(dataArr, 1): cols = UBound(dataArr, 2)
-    If masterTbl.ListColumns.Count <> cols Then
-        WriteLog "ERROR", "Master columns mismatch. Master=" & masterTbl.ListColumns.Count & " Mapping=" & cols
-        MsgBox "Masterテーブルの列数がMappingの出力列数と一致しません。", vbCritical
-        Exit Sub
-    End If
-    Dim newRange As Range
-    Set newRange = masterTbl.HeaderRowRange.Resize(rows + 1, cols)
-    masterTbl.Resize newRange
-    masterTbl.DataBodyRange.Value = dataArr
-End Sub
-
-
-'=== Runner: Import (PerfGuardから呼ばれる) ===
-' 概要: CSV 入力→前処理→マスター準備まで実行
-' 引数:
-'   pipeLine As String  … パイプライン名（"Main"|"List"）
-' 備考: ImportFiles を呼び出し、EndProgress で終了
-
-Public Sub Run_Import(ByVal pipeLine As String)
-    On Error GoTo EH
-    Pulse "インポート準備中"
-    ImportFiles pipeLine
-    EndProgress "インポート完了"
-    Exit Sub
-EH:
-    EndProgress "インポート中断"
-    Err.Raise Err.Number, Err.Source, Err.Description
-End Sub
-
-
-'=== Runner: Process (PerfGuardから呼ばれる) ===
-' 概要: （Import 済みデータに対して）マッピング→JOIN/CONCAT→型変換→フィルタ適用→Master_* へ貼付、までの本処理を実行
-' 引数:
-'   pipeLine As String  … パイプライン名（"Main"|"List"）
-' 備考: 途中で進捗更新（Pulse）、最終的にEndProgress
-
-Public Sub Run_Process(ByVal pipeLine As String)
-    On Error GoTo EH
-    Pulse "加工準備中"
-    ProcessData pipeLine
-    EndProgress "加工完了"
-    Exit Sub
-EH:
-    EndProgress "加工中断"
-    Err.Raise Err.Number, Err.Source, Err.Description
-End Sub
-
-
-⸻
-
-2️⃣ modJoinAndEval（全量・Definitionsの数式をそのまま反映）
-
-こちらは長いモジュールなので、「Excel数式をDefinitionsに書いてそのままMasterへ流す」ために変わったポイントだけ先に説明します。
-
-変更ポイント
-	•	EvaluateExpr の冒頭に 「= で始まって { を含まない式は、そのまま返す」ショートカットを追加
-	•	例：Definitionsの Definition に
-=IFERROR(VLOOKUP([@[作成者CD]], Sheet1!A:C, 3, FALSE), "")
-と書いておくと、そのままセルに入る（EXPRモードで使用）
-
-Definitions 側の使い方はこんなイメージです：
-	•	Definitionsシート
-
-def_id	Definition
-formula_author_name	=IFERROR(VLOOKUP([@[作成者CD]], Sheet1!A:C, 3, FALSE), “”)
-
-
-	•	Mappingシート（作成者名行）
-
-出力列	キー	モード	Definition	…
-作成者名		EXPR	formula_author_name	
-
-
-
-これで Process 実行時に、該当列に上記の Excel 数式がそのまま貼り付けられます。
-
-⸻
-
-modJoinAndEval 全量コード
-
-※ファイルがとても長いので、そのまま貼ります。
-今使っている modJoinAndEval.bas と 差し替えればOKです。
-
 Option Explicit
 '============================================================
 ' modJoinAndEval
@@ -406,386 +26,625 @@ Private Function ToNumberOrZero(ByVal s As Variant) As String
         Else
             ToNumberOrZero = "0"
         End If
+        Exit Function
+    End If
+    If IsNumeric(t) Then
+        ToNumberOrZero = CStr(CDbl(t))
     Else
-        If IsNumeric(t) Then
-            ToNumberOrZero = CStr(CDbl(t))
-        Else
-            ToNumberOrZero = "0"
-        End If
+        ToNumberOrZero = "0"
     End If
 End Function
 
-'============================================================
-' JOIN用のキー構築とインデックス
-'============================================================
 
-' ★ Mapping側のキー定義に基づき、任意テーブルのキー文字列を組み立てる
-'   - 1つの出力列に対して複数のキー列が紐づく場合もケアする
-'   - myKey が空の場合は、baseTbl/baseRow からキーを再構築する
+'--- NormalizeText ---
+' 概要: 文字列の正規化：Trim → 可能なら半角化（全角A/1対策）→ Null回避
+' 引数:
+'   ByVal s As Variant  …判定対象の文字列
 
-Public Function BuildLookupKey(baseTbl As String, baseRow As Long, Optional myKey As String = "") As String
-    Dim t As Long, i As Long
-    Dim keyCols As Collection
-    Dim tblIdx As Long
-    Dim acc As String
-
-    If Len(myKey) > 0 Then
-        BuildLookupKey = myKey
+Private Function NormalizeText(ByVal s As Variant) As String
+    Dim t As String
+    If IsNull(s) Then
+        NormalizeText = ""
         Exit Function
     End If
-
-    tblIdx = -1
-    For t = LBound(Map_TblNames) To UBound(Map_TblNames)
-        If Map_TblNames(t) = baseTbl Then
-            tblIdx = t
-            Exit For
-        End If
-    Next t
-    If tblIdx < 0 Then
-        BuildLookupKey = ""
-        Exit Function
-    End If
-
-    Set keyCols = New Collection
-    For i = LBound(Map_OutCols) To UBound(Map_OutCols)
-        If Map_IsKey(i) Then
-            Dim src As String
-            src = Map_SrcCols(i, tblIdx)
-            If Len(src) > 0 Then
-                keyCols.Add src
-            End If
-        End If
-    Next i
-
-    If keyCols.Count = 0 Then
-        BuildLookupKey = ""
-        Exit Function
-    End If
-
-    For i = 1 To keyCols.Count
-        Dim v As String
-        v = GetValueFromTable(baseTbl, keyCols(i), baseRow)
-        If i = 1 Then
-            acc = v
-        Else
-            acc = acc & "|" & v
-        End If
-    Next i
-
-    BuildLookupKey = acc
+    t = CStr(s)
+    t = Trim$(t)
+    On Error Resume Next
+    ' 全角英数字混在対策
+    t = StrConv(t, vbNarrow)
+    On Error GoTo 0
+    NormalizeText = t
 End Function
 
-Public Function TableIndexInMapping(tblName As String) As Long
-    Dim t As Long
-    For t = LBound(Map_TblNames) To UBound(Map_TblNames)
-        If Map_TblNames(t) = tblName Then
-            TableIndexInMapping = t
+
+'--- NormalizeHeader ---
+' 概要: 文字列を「ヘッダ用に」正規化（BOM除去＋Trim）
+' 引数:
+'   ByVal s As String  …判定対象の文字列
+
+Private Function NormalizeHeader(ByVal s As String) As String
+    If Len(s) = 0 Then
+        NormalizeHeader = ""
+        Exit Function
+    End If
+    s = Replace$(s, ChrW(&HFEFF), "") ' UTF-8 BOM を除去
+    s = Trim$(s)
+    NormalizeHeader = s
+End Function
+
+
+'--- SafeGetSrcColNames ---
+' 概要: 改行・| 区切りで複数列名を返す（空は除外）
+' 引数:
+'   i As Long  …
+'   tIdx As Long  …
+
+Private Function SafeGetSrcColNames(i As Long, tIdx As Long) As Collection
+    Dim col As New Collection
+
+    Dim raw As String
+    raw = SafeGetSrcColName(i, tIdx)
+    If Len(raw) = 0 Then
+        Set SafeGetSrcColNames = col
+        Exit Function
+    End If
+
+    Dim s As String
+    s = Replace$(raw, vbCrLf, vbLf)
+    s = Replace$(s, vbCr, vbLf)
+    s = Replace$(s, "|", vbLf)
+
+    Dim arr() As String, k As Long, one As String
+    arr = Split(s, vbLf)
+    For k = LBound(arr) To UBound(arr)
+        one = NormalizeHeader(arr(k))
+        If Len(one) > 0 Then col.Add one
+    Next
+
+    Set SafeGetSrcColNames = col
+End Function
+
+
+'--- Norm ---
+' 概要: 列名→列番号（見出し=1行目）
+' 引数:
+'   ByVal s As String  …
+
+Private Function Norm(ByVal s As String) As String
+    If Len(s) = 0 Then Norm = "": Exit Function
+    s = Replace$(s, ChrW(&HFEFF), "") ' UTF-8 BOM
+    s = Trim$(s)
+    Norm = s
+End Function
+
+
+'--- FindColumnIndex ---
+' 概要: インデックス（列番号）を見つける
+' 引数:
+'   arr As Variant  …
+'   ColName As String  …
+
+Public Function FindColumnIndex(arr As Variant, ColName As String) As Long
+    Dim c As Long, target As String
+    target = Norm(ColName)
+    For c = 1 To UBound(arr, 2)
+        If Norm(CStr(arr(1, c))) = target Then
+            FindColumnIndex = c
             Exit Function
         End If
-    Next t
-    TableIndexInMapping = -1
+    Next
+    FindColumnIndex = 0
 End Function
 
-'============================================================
-' JOIN前のキーインデックス構築とJOIN本体
-'============================================================
 
-Public Sub BuildKeyIndexes()
-    Dim t As Long
-    Set KeyIndexSingle = CreateObject("Scripting.Dictionary")
-    Set KeyIndexMulti = CreateObject("Scripting.Dictionary")
+'--- IndexOfTable ---
+' 概要: テーブル名のインデックス（見つからなければ -1）
+' 引数:
+'   tblNames  …
 
-    For t = LBound(Map_TblNames) To UBound(Map_TblNames)
-        Dim tbl As String
-        tbl = Map_TblNames(t)
-        Dim srcArr As Variant
-        srcArr = TableData(tbl)("data")
+Public Function IndexOfTable(tblNames() As String, name As String) As Long
+    Dim i As Long
+    For i = LBound(tblNames) To UBound(tblNames)
+        If tblNames(i) = name Then IndexOfTable = i: Exit Function
+    Next
+    IndexOfTable = -1
+End Function
 
-        Dim rowCount As Long
-        rowCount = UBound(srcArr, 1)
 
-        Dim keyCols As Collection
-        Set keyCols = New Collection
+'--- BuildKeyFromRow ---
+' 概要: 1行から複合キー文字列を作成
+' 引数:
+'   arr As Variant  …
+'   rowIdx As Long  …
+'   keyColIdx  …
 
-        Dim i As Long
-        For i = LBound(Map_OutCols) To UBound(Map_OutCols)
-            If Map_IsKey(i) Then
-                Dim colName As String
-                colName = Map_SrcCols(i, t)
-                If Len(colName) > 0 Then
-                    keyCols.Add colName
-                End If
-            End If
-        Next i
+Public Function BuildKeyFromRow(arr As Variant, rowIdx As Long, keyColIdx() As Long) As String
+    Dim i As Long, s As String: s = ""
+    If (Not Not keyColIdx) <> 0 Then
+        For i = LBound(keyColIdx) To UBound(keyColIdx)
+            If keyColIdx(i) > 0 Then s = s & "|" & CStr(arr(rowIdx, keyColIdx(i)))
+        Next
+    End If
+    If Len(s) > 0 Then s = Mid$(s, 2)
+    BuildKeyFromRow = s
+End Function
 
-        If keyCols.Count = 0 Then GoTo CONTINUE_T
 
-        Dim idx As Object
-        Set idx = CreateObject("Scripting.Dictionary")
+'--- SafeGetSrcColName ---
+' 概要: Map_SrcCols(i, tIdx) を安全に列名取得（添字補正＆型ガード）
+' 引数:
+'   i As Long  …
+'   tIdx As Long  …
 
-        Dim r As Long
-        For r = 2 To rowCount
-            Dim key As String
-            key = ""
-            For i = 1 To keyCols.Count
-                Dim v As String
-                v = GetValueFromTable(tbl, keyCols(i), r)
-                If i = 1 Then
-                    key = v
-                Else
-                    key = key & "|" & v
-                End If
-            Next i
+Private Function SafeGetSrcColName(i As Long, tIdx As Long) As String
+    Dim lb1 As Long, ub1 As Long, lb2 As Long, ub2 As Long
+    On Error GoTo FAIL
 
-            If Len(key) > 0 Then
-                If Not idx.Exists(key) Then
-                    If AllowOneToMany Then
-                        idx.Add key, CStr(r)
-                    Else
-                        idx.Add key, CStr(r)
-                    End If
-                Else
-                    If AllowOneToMany Then
-                        idx(key) = idx(key) & "," & CStr(r)
-                    End If
-                End If
-            End If
-        Next r
+    lb1 = LBound(Map_SrcCols, 1): ub1 = UBound(Map_SrcCols, 1)
+    lb2 = LBound(Map_SrcCols, 2): ub2 = UBound(Map_SrcCols, 2)
 
-        If AllowOneToMany Then
-            KeyIndexMulti(tbl) = idx
-        Else
-            KeyIndexSingle(tbl) = idx
+    Dim tAdj As Long
+    If lb2 = 1 And LBound(Map_TblNames) = 0 Then
+        tAdj = tIdx + 1
+    Else
+        tAdj = tIdx
+    End If
+
+    If i < lb1 Or i > ub1 Then GoTo FAIL
+    If tAdj < lb2 Or tAdj > ub2 Then GoTo FAIL
+
+    Dim v As Variant
+    v = Map_SrcCols(i, tAdj)
+
+    If IsError(v) Or IsNull(v) Then GoTo FAIL
+    If IsArray(v) Then GoTo FAIL
+
+    SafeGetSrcColName = Trim$(CStr(v))
+    Exit Function
+FAIL:
+    SafeGetSrcColName = ""
+End Function
+
+
+'--- CollectKeyColIndexesForBase ---
+' 概要: ベーステーブルのキー列 index 一式を返す（列名→列番号）
+' 引数:
+'   baseArr As Variant  …
+'   baseTbl As String  …
+
+Public Function CollectKeyColIndexesForBase(baseArr As Variant, baseTbl As String) As Variant
+    Dim tIdx As Long, i As Long, kc As Long
+    Dim names As Collection
+    tIdx = IndexOfTable(Map_TblNames, baseTbl)
+    If tIdx < LBound(Map_TblNames) Then
+        CollectKeyColIndexesForBase = Array(): Exit Function
+    End If
+
+    kc = 0
+    For i = LBound(Map_OutCols) To UBound(Map_OutCols)
+        If Map_IsKey(i) Then
+            Set names = SafeGetSrcColNames(i, tIdx)
+            If Not names Is Nothing Then If names.Count > 0 Then kc = kc + 1
         End If
+    Next
+    If kc = 0 Then CollectKeyColIndexesForBase = Array(): Exit Function
 
-CONTINUE_T:
-    Next t
-End Sub
+    Dim idx() As Long, cur As Long
+    ReDim idx(1 To kc): cur = 0
+
+    For i = LBound(Map_OutCols) To UBound(Map_OutCols)
+        If Map_IsKey(i) Then
+            Set names = SafeGetSrcColNames(i, tIdx)
+            If Not names Is Nothing Then
+                Dim picked As Long: picked = 0
+                Dim j As Long, nm As String, ci As Long
+                For j = 1 To names.Count
+                    nm = names(j)
+                    If IsNumeric(nm) Then
+                        ci = CLng(nm)
+                    Else
+                        ci = FindColumnIndex(baseArr, nm)
+                    End If
+                    If ci > 0 Then picked = ci: Exit For
+                Next
+                If picked > 0 Then
+                    cur = cur + 1
+                    idx(cur) = picked
+                End If
+            End If
+        End If
+    Next
+    CollectKeyColIndexesForBase = idx
+End Function
+
+
+' BuildJoinedRaw（無加工）※ Listパイプラインは1対多で行複製
+
+'--- BuildJoinedRaw ---
+' 概要: ベーステーブルを軸に1対多展開を考慮しつつ無加工のJOIN結果配列を作成
+' 引数:
+'   baseTbl As String  … ベースとなるテーブル名
 
 Public Function BuildJoinedRaw(baseTbl As String) As Variant
-    Dim baseArr As Variant
-    baseArr = TableData(baseTbl)("data")
+    Dim outColsCnt As Long
+    outColsCnt = UBound(Map_OutCols) - LBound(Map_OutCols) + 1
 
-    Dim rowCount As Long, colCount As Long
-    rowCount = UBound(baseArr, 1)
-    colCount = UBound(Map_OutCols)
+    Dim baseArr As Variant
+    Dim haveBase As Boolean: haveBase = (Len(baseTbl) > 0)
+    Dim baseKeyCols() As Long
+
+    Dim totalRows As Long, r As Long, myKey As String
+    Dim expand As Long, k As Long, c As Long
+
+    If Not haveBase Then
+        Dim emptyArr() As Variant
+        ReDim emptyArr(1 To 1, 1 To outColsCnt)
+        BuildJoinedRaw = emptyArr
+        Exit Function
+    End If
+
+    baseArr = TableData(baseTbl)
+    baseKeyCols = CollectKeyColIndexesForBase(baseArr, baseTbl)
+
+    ' 行数見積り
+    totalRows = 0
+    For r = 2 To UBound(baseArr, 1)
+        myKey = BuildKeyFromRow(baseArr, r, baseKeyCols)
+        expand = 1
+        If AllowOneToMany Then
+            expand = MaxMatchesForKey(myKey, baseTbl)
+            If expand < 1 Then expand = 1
+        End If
+        totalRows = totalRows + expand
+    Next
+
+    If totalRows = 0 Then
+        Dim empty2() As Variant
+        ReDim empty2(1 To 1, 1 To outColsCnt)
+        BuildJoinedRaw = empty2
+        Exit Function
+    End If
 
     Dim result() As Variant
-    ReDim result(1 To rowCount - 1, 1 To colCount)
+    ReDim result(1 To totalRows, 1 To outColsCnt)
+    ReDim m_baseRowIdx(1 To totalRows)
 
-    Dim r As Long, i As Long
-    For r = 2 To rowCount
-        Dim myKey As String
-        myKey = BuildLookupKey(baseTbl, r)
-
-        For i = LBound(Map_OutCols) To UBound(Map_OutCols)
-            result(r - 1, i) = BuildRawValueIgnoringMode(baseTbl, r, myKey, i)
-        Next i
+    ' 実データ埋め（常に無加工：モードは無視）
+    Dim outRow As Long: outRow = 0
+    For r = 2 To UBound(baseArr, 1)
+        myKey = BuildKeyFromRow(baseArr, r, baseKeyCols)
+        expand = 1
+        If AllowOneToMany Then
+            expand = MaxMatchesForKey(myKey, baseTbl)
+            If expand < 1 Then expand = 1
+        End If
+        For k = 1 To expand
+            outRow = outRow + 1
+            m_baseRowIdx(outRow) = r
+            For c = 1 To outColsCnt
+                ' ★ ここを forceJoinMultiple:=True に
+                result(outRow, c) = BuildValueModeRaw(c, baseTbl, r, myKey, k, True)
+            Next c
+        Next k
     Next r
 
     BuildJoinedRaw = result
 End Function
 
-Public Function BuildRawValueIgnoringMode(baseTbl As String, baseRow As Long, myKey As String, _
-                                          Optional outColIndex As Long = -1) As String
-    Dim i As Long, t As Long
-    Dim acc As String
 
-    Dim names As Collection
-    Set names = New Collection
+'--- MaxMatchesForKey ---
+' 概要: key に対する「各テーブルの一致件数」の最大値
+' 引数:
+'   ByVal keyStr As String  …
+'   baseTbl As String  …
+
+Private Function MaxMatchesForKey(ByVal keyStr As String, baseTbl As String) As Long
+    Dim t As Long, m As Long: m = 0
+    If (Not Not Map_TblNames) = 0 Then MaxMatchesForKey = 1: Exit Function
     For t = LBound(Map_TblNames) To UBound(Map_TblNames)
-        Dim src As String
-        src = Map_SrcCols(outColIndex, t)
-        If Len(src) > 0 Then
-            names.Add src
-        End If
-    Next t
-
-    If names.Count = 0 Then
-        BuildRawValueIgnoringMode = ""
-        Exit Function
-    End If
-
-    For t = LBound(Map_TblNames) To UBound(Map_TblNames)
-        Dim tbl As String
-        tbl = Map_TblNames(t)
-        Dim srcCol As String
-        srcCol = Map_SrcCols(outColIndex, t)
-        If Len(srcCol) = 0 Then GoTo CONT_T
-
-        Dim idx As Object
-        If KeyIndexSingle.Exists(tbl) Then
-            Set idx = KeyIndexSingle(tbl)
-        ElseIf KeyIndexMulti.Exists(tbl) Then
-            Set idx = KeyIndexMulti(tbl)
+        Dim nm As String: nm = Map_TblNames(t)
+        If nm = baseTbl Then
+            If m < 1 Then m = 1
         Else
-            GoTo CONT_T
-        End If
-
-        Dim matchIndex As String
-        matchIndex = ""
-        If idx.Exists(myKey) Then
-            matchIndex = idx(myKey)
-        End If
-
-        If Len(matchIndex) = 0 Then GoTo CONT_T
-
-        Dim arrIdx() As String
-        arrIdx = Split(matchIndex, ",")
-
-        If UBound(arrIdx) = 0 Then
-            Dim rowIdx As Long
-            rowIdx = CLng(arrIdx(0))
-            Dim v As String
-            v = GetValueFromTable(tbl, srcCol, rowIdx)
-            If Len(v) > 0 Then
-                If Len(acc) = 0 Then
-                    acc = v
-                Else
-                    acc = acc & vbLf & v
+            Dim kd As Object: Set kd = KeyIndexMulti(nm)
+            If Not kd Is Nothing Then
+                If kd.Exists(keyStr) Then
+                    If kd(keyStr).Count > m Then m = kd(keyStr).Count
                 End If
             End If
-        Else
-            Dim j As Long
-            For j = LBound(arrIdx) To UBound(arrIdx)
-                Dim rowIdx2 As Long
-                rowIdx2 = CLng(arrIdx(j))
-                Dim v2 As String
-                v2 = GetValueFromTable(tbl, srcCol, rowIdx2)
-                If Len(v2) > 0 Then
-                    If Len(acc) = 0 Then
-                        acc = v2
+        End If
+    Next
+    If m < 1 Then m = 1
+    MaxMatchesForKey = m
+End Function
+
+
+'--- BuildValueModeRaw ---
+' 概要: VALUE/CONCATモードを考慮して、raw値を（必要に応じて結合し）取り出す
+' 引数:
+'   colIndex As Long  … 出力列インデックス
+'   baseTbl As String  … ベーステーブル名
+'   baseRow As Long  … ベース行（配列の行番号）
+'   myKey As String  … 複合キー文字列
+' Optional matchIndex As Long = 1  …
+' Optional forceJoinMultiple As Boolean = False  …
+
+Public Function BuildValueModeRaw(colIndex As Long, baseTbl As String, baseRow As Long, myKey As String, _
+                                  Optional matchIndex As Long = 1, _
+                                  Optional forceJoinMultiple As Boolean = False) As Variant
+    Dim t As Long, v As Variant
+    v = ""
+    If (Not Not Map_TblNames) = 0 Then BuildValueModeRaw = v: Exit Function
+
+    Dim doJoin As Boolean
+    doJoin = forceJoinMultiple Or (UCase$(Map_Mode(colIndex)) = "VALUE" Or Len(Map_Mode(colIndex)) = 0)
+
+    For t = LBound(Map_TblNames) To UBound(Map_TblNames)
+        Dim names As Collection: Set names = SafeGetSrcColNames(colIndex, t)
+        If names Is Nothing Or names.Count = 0 Then GoTo CONT_T
+
+        If Map_TblNames(t) = baseTbl Then
+            Dim arr As Variant: arr = TableData(baseTbl)
+            Dim acc As String: acc = ""
+            Dim j As Long, one As String, ci As Long, valStr As String
+            For j = 1 To names.Count
+                one = names(j)
+                If IsNumeric(one) Then
+                    ci = CLng(one)
+                Else
+                    ci = FindColumnIndex(arr, one)
+                End If
+                If ci > 0 Then
+                    valStr = CStr(arr(baseRow, ci))
+                    If doJoin Then
+                        If Len(valStr) > 0 Then
+                            If Len(acc) = 0 Then acc = valStr Else acc = acc & vbLf & valStr
+                        End If
                     Else
-                        acc = acc & vbLf & v2
+                        v = valStr: Exit For
                     End If
                 End If
-            Next j
+            Next
+            If doJoin Then v = acc
+            If Len(CStr(v)) > 0 Then BuildValueModeRaw = v: Exit Function
+
+        Else
+            Dim acc2 As String: acc2 = ""
+            Dim j2 As Long, nm As String, got As String
+            For j2 = 1 To names.Count
+                nm = names(j2)
+                got = GetValueFromTableMulti(Map_TblNames(t), nm, myKey, matchIndex)
+                If doJoin Then
+                    If Len(got) > 0 Then
+                        If Len(acc2) = 0 Then acc2 = got Else acc2 = acc2 & vbLf & got
+                    End If
+                Else
+                    If Len(got) > 0 Then v = got: Exit For
+                End If
+            Next
+            If doJoin Then v = acc2
+            If Len(CStr(v)) > 0 Then BuildValueModeRaw = v: Exit Function
         End If
-
 CONT_T:
-    Next t
-
-    BuildRawValueIgnoringMode = acc
+    Next
+    BuildValueModeRaw = v
 End Function
 
-'============================================================
-' 値の取得・型変換・式評価まわり
-'============================================================
+'--- BuildConcatRawValue ---
+' 概要: CONCAT定義を評価してraw値を結合します。
+' 引数:
+'   def As String  … 定義文字列
+'   baseTbl As String  … ベーステーブル名
+'   baseRow As Long  … ベース行番号
+'   myKey As String  … 複合キー文字列
+'   Optional matchIndex As Long = 1  …
 
-Public Function GetValueFromTable(tbl As String, colName As String, rowIdx As Long) As String
-    Dim info As Object
-    Set info = TableData(tbl)
-    Dim arr As Variant
-    arr = info("data")
-    Dim colIndex As Long
-    colIndex = info("colIndex")(colName)
-    GetValueFromTable = CStr(arr(rowIdx, colIndex))
+Public Function BuildConcatRawValue(def As String, baseTbl As String, baseRow As Long, myKey As String, _
+                                    Optional matchIndex As Long = 1) As String
+    Dim parts As Collection: Set parts = SplitDefToParts(def)
+    Dim i As Long, v As String, acc As String
+    For i = 1 To parts.Count
+        v = ResolveTokenRawWithIndex(parts(i), baseTbl, baseRow, myKey, matchIndex)
+        If acc = "" Then acc = v Else If Len(v) > 0 Then acc = acc & vbLf & v
+    Next
+    BuildConcatRawValue = acc
 End Function
+
+
+'--- ResolveTokenRawWithIndex ---
+' 概要: トークン解決（raw / processed）※ matchIndex 対応
+' 引数:
+'   token As String  …
+'   baseTbl As String  …
+'   baseRow As Long  …
+'   myKey As String  …
+'   ByVal matchIndex As Long  …
+
+Private Function ResolveTokenRawWithIndex(token As String, baseTbl As String, baseRow As Long, myKey As String, _
+                                          ByVal matchIndex As Long) As String
+    Dim t As String, c As String, p As Long
+    token = Replace(Replace(token, "{", ""), "}", "")
+    p = InStr(token, ".")
+    If p = 0 Then Exit Function
+    t = Left$(token, p - 1): c = Mid$(token, p + 1)
+    If t = baseTbl Then
+        Dim arr As Variant, ci As Long
+        arr = TableData(t)
+        If IsNumeric(c) Then
+            ci = CLng(c)
+        Else
+            ci = FindColumnIndex(arr, c)
+        End If
+        If ci > 0 Then ResolveTokenRawWithIndex = CStr(arr(baseRow, ci))
+    Else
+        ResolveTokenRawWithIndex = GetValueFromTableMulti(t, c, myKey, matchIndex)
+    End If
+End Function
+
+'--- ResolveTokenRaw ---
+' 概要: トークン解決
+' 引数:
+'   token As String  …
+'   baseTbl As String  …
+'   baseRow As Long  …
+'   myKey As String  …
 
 Public Function ResolveTokenRaw(token As String, baseTbl As String, baseRow As Long, myKey As String) As String
-    Dim p As Long
-    p = InStr(token, ".")
-    Dim tbl As String, col As String
-    If p > 0 Then
-        tbl = Left$(token, p - 1)
-        col = Mid$(token, p + 1)
+    ResolveTokenRaw = ResolveTokenRawWithIndex(token, baseTbl, baseRow, myKey, 1)
+End Function
+
+
+'--- ResolveTokenProcessed ---
+' 概要: トークン解決
+' 引数:
+'   token As String  …
+'   baseTbl As String  …
+'   baseRow As Long  …
+'   myKey As String  …
+'   Optional outColIndex As Long = -1  …
+
+Public Function ResolveTokenProcessed(token As String, baseTbl As String, baseRow As Long, myKey As String, _
+                                      Optional outColIndex As Long = -1) As String
+    Dim raw As Variant
+    raw = ResolveTokenRaw(token, baseTbl, baseRow, myKey)
+    If outColIndex <= 0 Then
+        ResolveTokenProcessed = CStr(raw)
     Else
-        tbl = baseTbl
-        col = token
+        ' 置換ロジックは廃止。ここでは型変換のみ実施。
+        ResolveTokenProcessed = ApplyOneValueTransform(raw, Map_DataType(outColIndex))
     End If
+End Function
 
-    Dim t As Long
-    Dim rowIdx As Long
-    If tbl = baseTbl Then
-        rowIdx = baseRow
+
+'--- GetValueFromTableMulti ---
+' 概要: Multiテーブルから k番目の一致行の値を取る（なければ空）
+' 引数:
+'   tbl As String  …
+'   col As String  …
+'   keyStr As String  …
+'   matchIndex As Long  …
+
+Public Function GetValueFromTableMulti(tbl As String, col As String, keyStr As String, matchIndex As Long) As String
+    On Error GoTo SAFE
+    Dim kd As Object: Set kd = KeyIndexMulti(tbl)
+    If kd Is Nothing Then Exit Function
+    If Not kd.Exists(keyStr) Then Exit Function
+    Dim arr As Variant: arr = TableData(tbl)
+    Dim ci As Long
+    If IsNumeric(col) Then
+        ci = CLng(col)
     Else
-        Dim idx As Object
-        If KeyIndexSingle.Exists(tbl) Then
-            Set idx = KeyIndexSingle(tbl)
-        ElseIf KeyIndexMulti.Exists(tbl) Then
-            Set idx = KeyIndexMulti(tbl)
-        Else
-            ResolveTokenRaw = ""
-            Exit Function
-        End If
-        Dim key As String
-        key = myKey
-        If idx.Exists(key) Then
-            Dim s As String
-            s = idx(key)
-            Dim arr() As String
-            arr = Split(s, ",")
-            rowIdx = CLng(arr(0))
-        Else
-            ResolveTokenRaw = ""
-            Exit Function
-        End If
+        ci = FindColumnIndex(arr, col)
     End If
-
-    ResolveTokenRaw = GetValueFromTable(tbl, col, rowIdx)
-End Function
-
-'============================================================
-' EXPR/IF/SUM/Evaluate 等
-'============================================================
-
-Public Function SplitExprToLines(def As String) As Collection
-    Dim c As New Collection
-    Dim arr() As String
-    arr = Split(def, vbLf)
-    Dim i As Long
-    For i = LBound(arr) To UBound(arr)
-        c.Add arr(i)
-    Next i
-    Set SplitExprToLines = c
-End Function
-
-Public Function HasIFSyntax(s As String) As Boolean
-    Dim up As String
-    up = UCase$(s)
-    HasIFSyntax = (Left$(up, 3) = "IF(")
-End Function
-
-Public Function EvalIFLine(line As String, baseTbl As String, baseRow As Long, myKey As String, _
-                           processed As Boolean, Optional outColIndex As Long = -1) As String
-    ' ここは既存のIF行評価ロジックが入る（略）
-    ' （元のmodJoinAndEval.txtと同じ内容）
-    ' ...
-End Function
-
-Public Function EvalSUM(line As String, baseTbl As String, baseRow As Long, myKey As String, _
-                        processed As Boolean, Optional outColIndex As Long = -1) As String
-    ' ここも既存のSUM評価ロジック（略）
-    ' ...
-End Function
-
-Public Function FinalizeByType(s As String, dataType As String) As String
-    ' ここも既存の型変換ロジック（略）
-    ' ...
-End Function
-
-Public Function SafeEval(expr As String) As Double
-    ' ここも既存の簡易Evalロジック（略）
-    ' ...
-End Function
-
-Public Function ApplyTemplate(tmpl As String, baseTbl As String, baseRow As Long, myKey As String, _
-                              processed As Boolean, Optional outColIndex As Long = -1) As String
-    ' ここも既存のテンプレ展開ロジック（略）
-    ' ...
-End Function
-
-Public Function ReplaceTokensProcessedAsNumber(def As String, baseTbl As String, baseRow As Long, _
-                                               myKey As String, outColIndex As Long) As String
-    ' ここも既存の実装（略）
-    ' ...
+    If ci = 0 Then Exit Function
+    If kd(keyStr).Count >= matchIndex Then
+        GetValueFromTableMulti = CStr(arr(kd(keyStr)(matchIndex), ci))
+    End If
+    Exit Function
+SAFE:
+    GetValueFromTableMulti = ""
 End Function
 
 
-'★ ここが今回の重要ポイント：EXPR 全体の評価
+'--- NumVal ---
+' 概要: ユーティリティ: 数値化（既存 ToNumberOrZero を流用）
+' 引数:
+'   ByVal s As String  …
 
-Public Function EvaluateExpr(def As String, baseTbl As String, baseRow As Long, myKey As String, _
-                             ByVal processed As Boolean, Optional outColIndex As Long = -1) As Variant
+Private Function NumVal(ByVal s As String) As Double
+    NumVal = CDbl(Val(ToNumberOrZero(s)))
+End Function
+
+
+'--- EvalSUM ---
+' 概要: SUM( … ) の評価
+' 引数:
+'   ByVal line As String  …
+'   baseTbl As String  …
+'   baseRow As Long  …
+'   myKey As String  …
+'   ByVal processed As Boolean  …
+'   ByVal outColIndex As Long  …
+
+Private Function EvalSUM(ByVal line As String, baseTbl As String, baseRow As Long, myKey As String, _
+                         ByVal processed As Boolean, ByVal outColIndex As Long) As String
+    Dim inside As String, args As Collection, i As Long, v As String, total As Double
+    inside = Mid$(line, 5, Len(line) - 5) ' "SUM(" の後ろから末尾 ")" まで
+    Set args = SplitArgs(inside)
+    For i = 1 To args.Count
+        ' {tbl.col} / 数字文字列 / リテラル すべて GetScalarValue で解決
+        v = GetScalarValue(args(i), baseTbl, baseRow, myKey, processed, outColIndex)
+        total = total + NumVal(v)
+    Next
+    EvalSUM = CStr(total)
+End Function
+
+
+'--- EvaluateExpr ---
+' 概要: EXPR定義（IF/IFALL/IFANY/数式/テンプレ）を評価し、必要に応じて型最終化します。
+' 引数:
+'   def As String  … 定義（複数行可）
+'   baseTbl As String  … ベーステーブル名
+'   baseRow As Long  … ベース行番号
+'   myKey As String  … 複合キー文字列
+'   ByVal processed As Boolean  …
+'   Optional outColIndex As Long = -1  …
+
+'Public Function EvaluateExpr(def As String, baseTbl As String, baseRow As Long, myKey As String, _
+'                             ByVal processed As Boolean, Optional outColIndex As Long = -1) As Variant
+'    Dim lines As Collection: Set lines = SplitExprToLines(def)
+'    Dim i As Long, one As String, res As String, acc As String
+'    For i = 1 To lines.Count
+'        one = Trim$(lines(i))
+'        If one = "" Then GoTo CONT
+'        If HasIFSyntax(one) Then
+'            res = EvalIFLine(one, baseTbl, baseRow, myKey, processed, outColIndex)
+'            If Len(res) > 0 Then
+'                If acc = "" Then acc = res Else acc = acc & vbLf & res
+'            End If
+'        ElseIf InStr(one, """") > 0 Or InStr(one, "'") > 0 Then
+'            res = ApplyTemplate(one, baseTbl, baseRow, myKey, processed, outColIndex)
+'            If Len(res) > 0 Then
+'                If acc = "" Then acc = res Else acc = acc & vbLf & res
+'            End If
+'        Else
+'            Dim expr As String, up As String
+'            up = UCase$(one)
+'
+'            ' ★ Definitions で SUM(...) をそのまま使えるように
+'            If Left$(up, 4) = "SUM(" And Right$(up, 1) = ")" Then
+'                res = EvalSUM(one, baseTbl, baseRow, myKey, processed, outColIndex)
+'
+'            Else
+'                If processed Then
+'                    expr = ReplaceTokensProcessedAsNumber(one, baseTbl, baseRow, myKey, outColIndex)
+'                Else
+'                    expr = ReplaceTokensWithRaw(one, baseTbl, baseRow, myKey)
+'                End If
+'
+'                ' ★ まずは Excel の Evaluate で計算 → 失敗時のみ SafeEval へ
+'                Dim v As Variant
+'                On Error Resume Next
+'                v = Application.Evaluate("=" & expr)
+'                On Error GoTo 0
+'                If IsError(v) Or VarType(v) = vbError Or IsEmpty(v) Then
+'                    res = CStr(SafeEval(expr))
+'                Else
+'                    res = CStr(v)
+'                End If
+'            End If
+'
+'    If acc = "" Then acc = res Else acc = acc & vbLf & res
+'End If
+'CONT:
+'    Next
+'    If processed And outColIndex > 0 Then
+'        EvaluateExpr = FinalizeByType(acc, Map_DataType(outColIndex))
+'    Else
+'        EvaluateExpr = acc
+'    End If
+'End Function
+
     Dim trimmed As String
     trimmed = Trim$(def)
     ' ★ Definitionsで「生のExcel数式（=で始まり、{tbl.col}トークンを含まないもの）」が渡された場合、
@@ -848,8 +707,10 @@ CONT:
 End Function
 
 
+
 '--- ReplaceTokensWithRaw ---
 ' 概要: {tbl.col}トークンをraw値（非数値は0化）に置換して式文字列を組み立てる
+
 ' 引数:
 '   def As String  … 式文字列
 '   baseTbl As String  … ベーステーブル名
@@ -881,36 +742,611 @@ End Function
 '   myKey As String  … 複合キー文字列
 '   outColIndex As Long  … 出力列インデックス
 
-Public Function ReplaceTokensProcessedAsNumber(def As String, baseTbl As String, baseRow As Long, _
-                                               myKey As String, outColIndex As Long) As String
-    ' ここはあなたの元の実装そのまま（略）
+Public Function ReplaceTokensProcessedAsNumber(def As String, baseTbl As String, baseRow As Long, myKey As String, outColIndex As Long) As String
+    Dim s As String: s = def
+    Dim pos As Long, pos2 As Long, token As String, valStr As String
+    pos = InStr(s, "{")
+    Do While pos > 0
+        pos2 = InStr(pos + 1, s, "}")
+        If pos2 = 0 Then Exit Do
+        token = Mid$(s, pos + 1, pos2 - pos - 1)
+'        valStr = ResolveTokenProcessed(token, baseTbl, baseRow, myKey, outColIndex)
+        valStr = ToNumberOrZero(valStr)
+'        If Not IsNumeric(valStr) Then valStr = "0"
+        s = Left$(s, pos - 1) & valStr & Mid$(s, pos2 + 1)
+        pos = InStr(pos + Len(valStr), s, "{")
+    Loop
+    ReplaceTokensProcessedAsNumber = s
 End Function
 
-' ...（以下、元々の modJoinAndEval の残りの関数群が続きます）
+'--- ApplyTemplate ---
+' 概要: テンプレート文字列中の{tbl.col}を解決し、連結して返します。
+' 引数:
+'   def As String  … テンプレート
+'   baseTbl As String  … ベーステーブル名
+'   baseRow As Long  … ベース行番号
+'   myKey As String  … 複合キー文字列
+' _
+                              ByVal processed As Boolean  … 用途を指定します。
+'   Optional outColIndex As Long = -1  … 用途を指定します。
 
-※ 上の EvalIFLine / EvalSUM / FinalizeByType / SafeEval / ApplyTemplate /
-ReplaceTokensProcessedAsNumber などは、あなたが使っている元の modJoinAndEval.txt の中身をそのまま貼り付けてください。
-（ここでは説明を省くために「略」としましたが、実際には全部必要です）
+Public Function ApplyTemplate(def As String, baseTbl As String, baseRow As Long, myKey As String, _
+                              ByVal processed As Boolean, Optional outColIndex As Long = -1) As String
+    Dim s As String: s = def
+    Dim pos As Long, pos2 As Long, token As String, valStr As String
+    pos = InStr(s, "{")
+    Do While pos > 0
+        pos2 = InStr(pos + 1, s, "}")
+        If pos2 = 0 Then Exit Do
+        token = Mid$(s, pos + 1, pos2 - pos - 1)
+        If processed Then
+            valStr = ResolveTokenProcessed(token, baseTbl, baseRow, myKey, outColIndex)
+        Else
+            valStr = ResolveTokenRaw(token, baseTbl, baseRow, myKey)
+        End If
+        s = Left$(s, pos - 1) & valStr & Mid$(s, pos2 + 1)
+        pos = InStr(pos + Len(valStr), s, "{")
+    Loop
+    ' EXPR テンプレ行のダブルクォートを外す仕様
+    ApplyTemplate = Replace(s, """", "")
+End Function
 
-⸻
+'=== IF 構文群 ===
 
-まとめ
-	•	Clearボタン
-→ modProcess.ClearData は行ごと削除（数式も含めてまっさら）に戻しています。
-	•	DefinitionsのDefinitionに数式を書いて、EXPRでMasterへ反映
-→ modJoinAndEval.EvaluateExpr の冒頭で
-「=で始まり、{を含まない文字列はそのまま返す」
-というショートカットを入れたことで、
+'--- HasIFSyntax ---
+' 概要: 文字列が IF / IFALL / IFANY 構文かどうかを判定する
+' 引数:
+'   ByVal s As String  …判定対象の文字列
+Private Function HasIFSyntax(ByVal s As String) As Boolean
+    s = UCase$(s)
+    HasIFSyntax = (Left$(s, 3) = "IF(") Or (Left$(s, 6) = "IFALL(") Or (Left$(s, 6) = "IFANY(")
+End Function
 
-Definitions.Definition:
-  =IFERROR(VLOOKUP([@[作成者CD]], Sheet1!A:C, 3, FALSE), "")
-Mapping.Mode:
-  EXPR
 
-と書いておくだけで、その数式がMasterのセルにそのまま入ります。
+'--- EvalIFLine ---
+' 概要: 1行の IF/IFALL/IFANY 条件式を評価し、結果に応じた then/else テキストを展開
+' 引数:
+'   ByVal line As String  … 条件式全体（例: IF(..., "...", "...")）
+'   baseTbl As String  … ベーステーブル名
+'   baseRow As Long  … ベース行番号
+'   myKey As String  … 複合キー文字列
+' 　ByVal processed As Boolean  … 加工済み値かどうか
+'   ByVal outColIndex As Long  … 出力列インデックス
 
-もし、
-	•	Definitions と Mapping の「作成者名」「部署名」用の行を
-実際のヘッダ名に合わせて全部こちらで書いてほしい
+Private Function EvalIFLine(ByVal line As String, baseTbl As String, baseRow As Long, myKey As String, _
+                            ByVal processed As Boolean, ByVal outColIndex As Long) As String
+    Dim fn As String, inside As String
+    Dim pOpen As Long, pClose As Long
+    pOpen = InStr(line, "("): pClose = InStrRev(line, ")")
+    If pOpen = 0 Or pClose = 0 Or pClose <= pOpen Then Exit Function
+    fn = UCase$(Left$(line, pOpen - 1))
+    inside = Mid$(line, pOpen + 1, pClose - pOpen - 1)
 
-みたいなのがあれば、ヘッダー行をコピペしてくれれば、それ用の定義もセットで作ります！
+    Dim args As Collection: Set args = SplitArgs(inside)
+    If args.Count < 3 Then Exit Function
+
+    Dim thenText As String, elseText As String
+    thenText = StripQuotes(args(args.Count - 1))
+    elseText = StripQuotes(args(args.Count))
+
+    Dim ok As Boolean
+    Select Case fn
+        Case "IF"
+            ok = EvalOneCondition(args(1), baseTbl, baseRow, myKey, processed, outColIndex)
+        Case "IFALL"
+            ok = EvalAllConditions(args, 1, args.Count - 2, baseTbl, baseRow, myKey, processed, outColIndex)
+        Case "IFANY"
+            ok = EvalAnyConditions(args, 1, args.Count - 2, baseTbl, baseRow, myKey, processed, outColIndex)
+        Case Else
+            ok = False
+    End Select
+
+    If ok Then
+        ' ★ thenText 内の {tbl.col} を展開
+        EvalIFLine = ApplyTemplate(thenText, baseTbl, baseRow, myKey, processed, outColIndex)
+    Else
+        ' ★ elseText 内の {tbl.col} を展開
+        EvalIFLine = ApplyTemplate(elseText, baseTbl, baseRow, myKey, processed, outColIndex)
+    End If
+End Function
+
+
+'--- EvalAllConditions ---
+' 概要: 複数条件をすべて満たすかを判定する（AND判定）
+' 引数:
+'   args As Collection  … 条件式一覧
+'   idxFrom As Long  … 開始インデックス
+'   idxTo As Long  … 終了インデックス
+' 　baseTbl As String  … ベーステーブル名
+'   baseRow As Long  … ベース行番号
+'   myKey As String  … 複合キー文字列
+' 　ByVal processed As Boolean  … 加工済み値の使用可否
+'   ByVal outColIndex As Long  … 出力列インデックス
+
+Private Function EvalAllConditions(args As Collection, idxFrom As Long, idxTo As Long, _
+                                   baseTbl As String, baseRow As Long, myKey As String, _
+                                   ByVal processed As Boolean, ByVal outColIndex As Long) As Boolean
+    Dim i As Long
+    For i = idxFrom To idxTo
+        If Not EvalOneCondition(args(i), baseTbl, baseRow, myKey, processed, outColIndex) Then
+            EvalAllConditions = False: Exit Function
+        End If
+    Next
+    EvalAllConditions = True
+End Function
+
+
+'--- EvalAnyConditions ---
+' 概要: 複数条件のいずれかを満たすかを判定する（OR判定）
+' 引数:
+'   args As Collection  … 条件式一覧
+'   idxFrom As Long  … 開始インデックス
+'   idxTo As Long  … 終了インデックス
+' 　baseTbl As String  … ベーステーブル名
+'   baseRow As Long  … ベース行番号
+'   myKey As String  … 複合キー文字列
+' 　ByVal processed As Boolean  … 加工済み値の使用可否
+'   ByVal outColIndex As Long  … 出力列インデックス
+
+Private Function EvalAnyConditions(args As Collection, idxFrom As Long, idxTo As Long, _
+                                   baseTbl As String, baseRow As Long, myKey As String, _
+                                   ByVal processed As Boolean, ByVal outColIndex As Long) As Boolean
+    Dim i As Long
+    For i = idxFrom To idxTo
+        If EvalOneCondition(args(i), baseTbl, baseRow, myKey, processed, outColIndex) Then
+            EvalAnyConditions = True: Exit Function
+        End If
+    Next
+    EvalAnyConditions = False
+End Function
+
+'--- EvalOneCondition ---
+' 概要: 単一条件を評価する（LIKE/STARTSWITH/ENDSWITH/CONTAINS/等号判定）
+' 引数:
+'   cond As String  … 条件式（例: {tbl.col}="ABC"）
+'   baseTbl As String  … ベーステーブル名
+'   baseRow As Long  … ベース行番号
+'   myKey As String  … 複合キー文字列
+' 　ByVal processed As Boolean  … 加工済み値の使用可否
+'   ByVal outColIndex As Long  … 出力列インデックス
+
+Private Function EvalOneCondition(cond As String, baseTbl As String, baseRow As Long, myKey As String, _
+                                  ByVal processed As Boolean, ByVal outColIndex As Long) As Boolean
+    Dim p As Long, leftExpr As String, rightExpr As String
+    Dim actual As String, expected As String, u As String
+    cond = Trim$(cond)
+    u = UCase$(cond)
+
+    ' LIKE({..},"A*") 形式
+    If Left$(u, 5) = "LIKE(" And Right$(u, 1) = ")" Then
+        Dim inside As String, args As Collection
+        inside = Mid$(cond, 6, Len(cond) - 6)
+        Set args = SplitArgs(inside)
+        If args.Count = 2 Then
+            actual = GetScalarValue(args(1), baseTbl, baseRow, myKey, processed, outColIndex)
+            expected = StripQuotes(args(2))
+            EvalOneCondition = (actual Like expected)
+'            WriteLog "DEBUG", "[COND LIKE] actual='" & actual & "' pattern='" & expected & "' -> " & EvalOneCondition
+            Exit Function
+        End If
+    End If
+
+    ' STARTSWITH/ENDSWITH/CONTAINS
+    If Left$(u, 11) = "STARTSWITH" Or Left$(u, 9) = "ENDSWITH" Or Left$(u, 8) = "CONTAINS" Then
+        Dim fn As String, ins As String, a As Collection
+        fn = Left$(cond, InStr(cond, "(") - 1)
+        ins = Mid$(cond, InStr(cond, "(") + 1, Len(cond) - InStr(cond, "(") - 1)
+        Set a = SplitArgs(ins)
+        If a.Count = 2 Then
+            actual = GetScalarValue(a(1), baseTbl, baseRow, myKey, processed, outColIndex)
+            expected = StripQuotes(a(2))
+            Select Case UCase$(fn)
+                Case "STARTSWITH": EvalOneCondition = (Left$(actual, Len(expected)) = expected)
+                Case "ENDSWITH":   EvalOneCondition = (Right$(actual, Len(expected)) = expected)
+                Case "CONTAINS":   EvalOneCondition = (InStr(1, actual, expected, vbTextCompare) > 0)
+            End Select
+'            WriteLog "DEBUG", "[COND " & UCase$(fn) & "] actual='" & actual & "' expected='" & expected & "' -> " & EvalOneCondition
+            Exit Function
+        End If
+    End If
+
+    ' A = B 比較
+    p = InStr(cond, "=")
+    If p = 0 Then
+        EvalOneCondition = False
+'        WriteLog "DEBUG", "[COND] no '=' in '" & cond & "'"
+        Exit Function
+    End If
+    leftExpr = Trim$(Left$(cond, p - 1))
+    rightExpr = Trim$(Mid$(cond, p + 1))
+    actual = GetScalarValue(leftExpr, baseTbl, baseRow, myKey, processed, outColIndex)
+    expected = NormalizeText(StripQuotes(rightExpr))
+
+    EvalOneCondition = (actual = expected)
+'    WriteLog "DEBUG", "[COND =] actual='" & actual & "' expected='" & expected & "' -> " & EvalOneCondition
+End Function
+
+
+'--- EvalIFALL ---
+' 概要: IFALL 構文を評価（すべての条件が真なら True）
+' 引数:
+'   argList As String  … 条件式のカンマ区切りリスト
+'   baseTbl As String  … ベーステーブル名
+'   baseRow As Long  … ベース行番号
+'   myKey As String  … 複合キー文字列
+' 　ByVal processed As Boolean  … 加工済み値の使用可否
+'   ByVal outColIndex As Long  … 出力列インデックス
+
+Private Function EvalIFALL(argList As String, baseTbl As String, baseRow As Long, myKey As String, _
+                           ByVal processed As Boolean, ByVal outColIndex As Long) As Boolean
+    Dim conds As Collection, i As Long, c As String
+    Set conds = SplitArgs(argList)
+    If conds Is Nothing Or conds.Count = 0 Then
+        EvalIFALL = False
+        Exit Function
+    End If
+
+    EvalIFALL = True
+    For i = 1 To conds.Count
+        c = Trim$(conds(i))
+        If Len(c) = 0 Then
+            ' 空条件はスキップ
+        Else
+            If Not EvalOneCondition(c, baseTbl, baseRow, myKey, processed, outColIndex) Then
+                EvalIFALL = False
+                Exit For
+            End If
+        End If
+    Next i
+End Function
+
+
+'--- GetScalarValue ---
+' 概要: LEFT/RIGHT/MID/LEN 関数や {tbl.col} のトークンを評価し、値を返す（正規化あり）
+' 引数:
+'   expr As String  … 評価対象の式やトークン
+'   baseTbl As String  … ベーステーブル名
+'   baseRow As Long  … ベース行番号
+'   myKey As String  … 複合キー文字列
+' 　ByVal processed As Boolean  … 加工済み値の使用可否
+'   ByVal outColIndex As Long  … 出力列インデックス
+
+Private Function GetScalarValue(expr As String, baseTbl As String, baseRow As Long, myKey As String, _
+                                ByVal processed As Boolean, ByVal outColIndex As Long) As String
+    Dim u As String: u = UCase$(Trim$(expr))
+    Dim inside As String, a As Collection
+
+    If Left$(u, 5) = "LEFT(" And Right$(u, 1) = ")" Then
+        inside = Mid$(expr, 6, Len(expr) - 6)
+        Set a = SplitArgs(inside)
+        If a.Count = 2 Then
+            Dim s As String, n As Long
+            s = NormalizeText(GetScalarValue(a(1), baseTbl, baseRow, myKey, processed, outColIndex))
+            n = CLng(Val(a(2)))
+            GetScalarValue = Left$(s, n)
+            Exit Function
+        End If
+
+    ElseIf Left$(u, 6) = "RIGHT(" And Right$(u, 1) = ")" Then
+        inside = Mid$(expr, 7, Len(expr) - 7)
+        Set a = SplitArgs(inside)
+        If a.Count = 2 Then
+            Dim s2 As String, n2 As Long
+            s2 = NormalizeText(GetScalarValue(a(1), baseTbl, baseRow, myKey, processed, outColIndex))
+            n2 = CLng(Val(a(2)))
+            GetScalarValue = Right$(s2, n2)
+            Exit Function
+        End If
+
+    ElseIf Left$(u, 4) = "MID(" And Right$(u, 1) = ")" Then
+        inside = Mid$(expr, 5, Len(expr) - 5)
+        Set a = SplitArgs(inside)
+        If a.Count = 3 Then
+            Dim s3 As String, st As Long, ln As Long
+            s3 = NormalizeText(GetScalarValue(a(1), baseTbl, baseRow, myKey, processed, outColIndex))
+            st = CLng(Val(a(2)))
+            ln = CLng(Val(a(3)))
+            GetScalarValue = Mid$(s3, st, ln)
+            Exit Function
+        End If
+
+    ElseIf Left$(u, 4) = "LEN(" And Right$(u, 1) = ")" Then
+        inside = Mid$(expr, 5, Len(expr) - 5)
+        Dim s4 As String
+        s4 = NormalizeText(GetScalarValue(inside, baseTbl, baseRow, myKey, processed, outColIndex))
+        GetScalarValue = CStr(Len(s4))
+        Exit Function
+    End If
+
+    ' 最終的には {tbl.col} を解決 → 正規化
+    Dim raw As String
+    If processed Then
+        raw = ResolveTokenProcessed(expr, baseTbl, baseRow, myKey, outColIndex)
+    Else
+        raw = ResolveTokenRaw(expr, baseTbl, baseRow, myKey)
+    End If
+    GetScalarValue = NormalizeText(raw)
+End Function
+
+
+'=== 文字列ユーティリティ ===
+
+'--- StripQuotes ---
+' 概要: 文字列を囲むシングル/ダブルクォートを外す
+' 引数:
+'   ByVal s As String  … 対象文字列
+Private Function StripQuotes(ByVal s As String) As String
+    s = Trim$(s)
+    If (Left$(s, 1) = "'" And Right$(s, 1) = "'") Or (Left$(s, 1) = """" And Right$(s, 1) = """") Then
+        StripQuotes = Mid$(s, 2, Len(s) - 2)
+    Else
+        StripQuotes = s
+    End If
+End Function
+
+
+'--- SplitArgs ---
+' 概要: カンマ区切りの文字列を引数ごとに分割（クォート内カンマは除外）
+' 引数:
+'   ByVal s As String  … カンマ区切り文字列
+
+Private Function SplitArgs(ByVal s As String) As Collection
+    Dim col As New Collection
+    Dim i As Long, ch As String * 1, inQ As Boolean, qChar As String * 1, buf As String
+    For i = 1 To Len(s)
+        ch = Mid$(s, i, 1)
+        If ch = """" Or ch = "'" Then
+            If inQ Then
+                If ch = qChar Then inQ = False
+            Else
+                inQ = True: qChar = ch
+            End If
+            buf = buf & ch
+        ElseIf ch = "," And Not inQ Then
+            col.Add Trim$(buf): buf = ""
+        Else
+            buf = buf & ch
+        End If
+    Next
+    If Len(buf) > 0 Or s = "" Then col.Add Trim$(buf)
+    Set SplitArgs = col
+End Function
+
+
+'--- SplitDefToParts ---
+' 概要: 定義文字列を改行または "|" で分割し、空行を除外してコレクション化
+' 引数:
+'   ByVal def As String  … 定義文字列
+
+Public Function SplitDefToParts(ByVal def As String) As Collection
+    Dim col As New Collection, tmp As String
+    tmp = Replace(def, vbCr, "")
+    tmp = Replace(tmp, "|", vbLf)
+    Dim arr() As String, i As Long
+    arr = Split(tmp, vbLf)
+    For i = LBound(arr) To UBound(arr)
+        If Trim$(arr(i)) <> "" Then col.Add Trim$(arr(i))
+    Next
+    Set SplitDefToParts = col
+End Function
+
+'--- SplitExprToLines ---
+' 概要: 式定義文字列を行単位に分割して返す（内部的に SplitDefToParts を使用）
+' 引数:
+'   ByVal def As String  … 式定義文字列
+
+Public Function SplitExprToLines(ByVal def As String) As Collection
+    Set SplitExprToLines = SplitDefToParts(def)
+End Function
+
+
+'--- ApplyTransformSmart ---
+' 概要: 後段の加工（型変換のみ／IFや式はEXPRで）
+' 引数:
+'   src As Variant  …
+Public Function ApplyTransformSmart(src As Variant) As Variant
+    Dim rows As Long, cols As Long
+    rows = UBound(src, 1): cols = UBound(src, 2)
+    Dim dst() As Variant: ReDim dst(1 To rows, 1 To cols)
+
+    Dim r As Long, c As Long
+    For r = 1 To rows
+        For c = 1 To cols
+            Select Case Map_Mode(c)
+                Case "CONCAT"
+                    ' dst(r, c) = BuildConcatProcessedValue(Map_Def(c), m_baseTblName, m_baseRowIdx(r), GetKeyForRow(r), c)
+                Case "EXPR"
+                    dst(r, c) = EvaluateExpr(Map_Def(c), m_baseTblName, m_baseRowIdx(r), GetKeyForRow(r), True, c)
+                Case Else
+                    dst(r, c) = ApplyOneValueTransform(src(r, c), Map_DataType(c))
+            End Select
+        Next
+        'ログ出力
+        WriteLog "INFO", "ApplyTransform: done " & GetKeyForRow(r)
+    Next
+    ApplyTransformSmart = dst
+End Function
+
+'--- GetKeyForRow ---
+' 概要: 出力行からベーステーブルのキー文字列を取得
+' 引数:
+'   r As Long  … 出力行番号
+
+Private Function GetKeyForRow(r As Long) As String
+    Dim baseArr As Variant, baseKeyCols() As Long
+    If Len(m_baseTblName) = 0 Then Exit Function
+    baseArr = TableData(m_baseTblName)
+    baseKeyCols = CollectKeyColIndexesForBase(baseArr, m_baseTblName)
+    GetKeyForRow = BuildKeyFromRow(baseArr, m_baseRowIdx(r), baseKeyCols)
+End Function
+
+
+'--- ApplyOneValueTransform ---
+' 概要: 単値の型変換のみ（ロジック置換は廃止）
+' 引数:
+'   v As Variant  …
+'   dataType As String  …
+Public Function ApplyOneValueTransform(v As Variant, dataType As String) As String
+    Dim w As Variant: w = v
+    Select Case UCase$(dataType)
+        Case "NUMBER": If Len(CStr(w)) > 0 And IsNumeric(w) Then w = CLng(w) Else w = ""
+        Case "DATE":   If Len(CStr(w)) > 0 And IsDate(w) Then w = Format$(CDate(w), "yyyy/mm/dd") Else w = ""
+        Case Else:     w = CStr(w)
+    End Select
+    ApplyOneValueTransform = CStr(w)
+End Function
+
+
+'--- SafeEval ---
+' 概要: 四則演算
+' 引数:
+'   ByVal expr As String  …
+Public Function SafeEval(ByVal expr As String) As Double
+    expr = Replace(expr, " ", "")
+    Dim nums() As Double, ops() As String, nTop As Long, oTop As Long
+    ReDim nums(1 To 1): ReDim ops(1 To 1): nTop = 0: oTop = 0
+
+    Dim i As Long, ch As String, num As String
+    i = 1
+    Do While i <= Len(expr)
+        ch = Mid$(expr, i, 1)
+        If ch Like "[0-9.]" Then
+            num = ""
+            Do While i <= Len(expr) And Mid$(expr, i, 1) Like "[0-9.]"
+                num = num & Mid$(expr, i, 1): i = i + 1
+            Loop
+            nTop = nTop + 1: ReDim Preserve nums(1 To nTop)
+            On Error Resume Next: nums(nTop) = CDbl(num): On Error GoTo 0
+            GoTo CONT
+        ElseIf ch = "(" Then
+            oTop = oTop + 1: ReDim Preserve ops(1 To oTop): ops(oTop) = ch
+        ElseIf ch = ")" Then
+            Do While oTop > 0 And ops(oTop) <> "("
+                ApplyOp nums, nTop, ops, oTop
+            Loop
+            If oTop > 0 And ops(oTop) = "(" Then oTop = oTop - 1
+        ElseIf ch = "+" Or ch = "-" Or ch = "*" Or ch = "/" Then
+            Do While oTop > 0 And Precedence(ops(oTop)) >= Precedence(ch)
+                ApplyOp nums, nTop, ops, oTop
+            Loop
+            oTop = oTop + 1: ReDim Preserve ops(1 To oTop): ops(oTop) = ch
+        End If
+CONT:
+        i = i + 1
+    Loop
+    Do While oTop > 0
+        ApplyOp nums, nTop, ops, oTop
+    Loop
+    If nTop > 0 Then SafeEval = nums(nTop) Else SafeEval = 0
+End Function
+
+'--- Precedence ---
+' 概要: 演算子の優先順位を返す（+, - は1、*, / は2）
+' 引数:
+'   op As String  … 演算子文字列
+
+Private Function Precedence(op As String) As Long
+    Select Case op
+        Case "+", "-": Precedence = 1
+        Case "*", "/": Precedence = 2
+        Case Else:     Precedence = 0
+    End Select
+End Function
+
+'--- ApplyOp ---
+' 概要: スタック上の2つの数値に対して演算子を適用し、結果を数値スタックへ戻す
+' 引数:
+'   ByRef nums() As Double … 数値スタック
+'   ByRef nTop As Long     … 数値スタックのトップインデックス
+'   ByRef ops() As String  … 演算子スタック
+'   ByRef oTop As Long     … 演算子スタックのトップインデックス
+
+Private Sub ApplyOp(ByRef nums() As Double, ByRef nTop As Long, ByRef ops() As String, ByRef oTop As Long)
+    If nTop < 2 Or oTop = 0 Then Exit Sub
+    Dim b As Double, a As Double, op As String, res As Double
+    b = nums(nTop): nTop = nTop - 1
+    a = nums(nTop): nTop = nTop - 1
+    op = ops(oTop): oTop = oTop - 1
+    Select Case op
+        Case "+": res = a + b
+        Case "-": res = a - b
+        Case "*": res = a * b
+        Case "/": If b = 0 Then res = 0 Else res = a / b
+    End Select
+    nTop = nTop + 1: ReDim Preserve nums(1 To nTop): nums(nTop) = res
+End Sub
+
+
+'--- FinalizeByType ---
+' 概要: EXPR最終型の整形（NUMBER/DATE等）
+' 引数:
+'   ByVal s As String  …
+'   ByVal dataType As String  …
+Private Function FinalizeByType(ByVal s As String, ByVal dataType As String) As String
+    Select Case UCase$(dataType)
+        Case "NUMBER"
+            If Len(s) = 0 Then
+                FinalizeByType = ""
+            ElseIf IsNumeric(s) Then
+                FinalizeByType = CStr(CLng(s))
+            Else
+                FinalizeByType = "0"
+            End If
+        Case "DATE"
+            If Len(s) = 0 Then
+                FinalizeByType = ""
+            ElseIf IsDate(s) Then
+                FinalizeByType = Format$(CDate(s), "yyyy/mm/dd")
+            Else
+                FinalizeByType = ""
+            End If
+        Case Else
+            FinalizeByType = s
+    End Select
+End Function
+
+
+'--- BuildRawValueIgnoringMode ---
+' 概要: インポート専用の値取得
+' 引数:
+'   colIndex As Long  …
+'   baseTbl As String  …
+'   baseRow As Long  …
+'   myKey As String  …
+' 　Optional matchIndex As Long = 1  …
+Public Function BuildRawValueIgnoringMode(colIndex As Long, baseTbl As String, baseRow As Long, myKey As String, _
+                                          Optional matchIndex As Long = 1) As String
+    Dim t As Long, acc As String: acc = ""
+    For t = LBound(Map_TblNames) To UBound(Map_TblNames)
+        Dim names As Collection: Set names = SafeGetSrcColNames(colIndex, t)
+        If names.Count = 0 Then GoTo CONT_T
+
+        If Map_TblNames(t) = baseTbl Then
+            Dim arr As Variant: arr = TableData(baseTbl)
+            Dim j As Long, nm As String, ci As Long, v As String
+            For j = 1 To names.Count
+                nm = names(j)
+                If IsNumeric(nm) Then
+                    ci = CLng(nm)
+                Else
+                    ci = FindColumnIndex(arr, nm)
+                End If
+                If ci > 0 Then
+                    v = CStr(arr(baseRow, ci))
+                    If Len(v) > 0 Then
+                        If Len(acc) = 0 Then acc = v Else acc = acc & vbLf & v
+                    End If
+                End If
+            Next
+        Else
+            Dim j2 As Long, nm2 As String, got As String
+            For j2 = 1 To names.Count
+                nm2 = names(j2)
+                got = GetValueFromTableMulti(Map_TblNames(t), nm2, myKey, matchIndex)
+                ' ...（以降はソース断片の都合で省略）
+            Next
+        End If
+CONT_T:
+    Next
+    BuildRawValueIgnoringMode = acc
+End Function
